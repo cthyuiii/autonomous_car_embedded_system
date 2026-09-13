@@ -4,6 +4,9 @@
  *
  * NOTE: A real implementation needs the CYW43 driver, so once implemented
  * this test needs a stub header for it. The contract stays the same.
+ *
+ * Owner: Buddy 1, WiFi communication, command and telemetry. Add an assert for
+ * every new guarantee and never delete one to make it pass.
  */
 
 #include <assert.h>

@@ -7,6 +7,8 @@
  * function would have to format into a fixed buffer first, and a fixed
  * buffer is a truncation bug waiting to happen. The level test is a compile
  * time constant, so a disabled level costs nothing.
+ *
+ * Owner: the team. Finished; nothing to edit here.
  */
 
 #ifndef CAR_LOG_H

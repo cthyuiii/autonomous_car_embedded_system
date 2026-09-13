@@ -1,6 +1,9 @@
 /** @file line_barcode.c
  *
  * @brief IR line position, junctions and barcode decoding.
+ *
+ * Owner: Buddy 3, barcode decoding and IR line following. Implement the TODOs
+ * in this file. It is yours.
  */
 
 #include "line_barcode.h"

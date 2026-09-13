@@ -4,6 +4,9 @@
  *
  * Every assert states what the implementation must guarantee. They fail
  * today because the stubs return CAR_ERR_NOT_IMPLEMENTED.
+ *
+ * Owner: Buddy 2, motion control. Add an assert for every new guarantee and
+ * never delete one to make it pass.
  */
 
 #include <assert.h>

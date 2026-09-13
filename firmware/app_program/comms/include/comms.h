@@ -5,6 +5,10 @@
  * All calls are non blocking. Call comms_poll() from the main loop; it owns
  * reconnection, so the rest of the firmware never waits on the network.
  * Topic names and timeouts are the COMMS_* constants in car_config.h.
+ *
+ * Owner: Buddy 1, WiFi communication, command and telemetry. A changed
+ * signature here also changes the test, the bench and car_main.c, so agree it
+ * with the team first.
  */
 
 #ifndef COMMS_H

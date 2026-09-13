@@ -6,6 +6,9 @@
  * for MQTT, the WIFI_TCP=1 profile chain. lwIP runs NO_SYS=1, so every
  * call into this module must come from one task. The MQTT client is
  * lwIP's own apps/mqtt raw API client from the Pico SDK's lwIP tree.
+ *
+ * Owner: Buddy 1, WiFi communication, command and telemetry. Implement the
+ * TODOs in this file. It is yours.
  */
 
 #include "comms.h"

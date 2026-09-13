@@ -5,6 +5,9 @@
  * NOTE: The Robo Pico carries the H-bridge, two PWM pins per motor on the
  * MOTOR_* pins in car_config.h. Drive them with the kernel BSP helpers
  * pwm_set_pin(), pwm_set_wrap(), pwm_set_cc() and pwm_set_enabled().
+ *
+ * Owner: Buddy 2, motion control. Implement the TODOs in this file. It is
+ * yours.
  */
 
 #include "motion.h"

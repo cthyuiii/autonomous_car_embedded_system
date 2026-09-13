@@ -6,6 +6,9 @@
  * WIFI_DHCP=1` and flash to a Pico W with the broker reachable. Watch the
  * serial output for connection state, and send commands to
  * COMMS_TOPIC_COMMAND from a laptop MQTT client to see them echoed.
+ *
+ * Owner: Buddy 1, WiFi communication, command and telemetry. Extend it as you
+ * need; nothing else depends on it.
  */
 
 #include <stdint.h>

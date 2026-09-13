@@ -6,6 +6,9 @@
  * hardware attached. Compare the commanded distance to the pulse counts to
  * set WHEEL_CIRCUMFERENCE_MM and ENCODER_SLOTS_PER_REV, and compare left to
  * right for a duty mismatch.
+ *
+ * Owner: Buddy 2, motion control. Extend it as you need; nothing else depends
+ * on it.
  */
 
 #include <stdint.h>

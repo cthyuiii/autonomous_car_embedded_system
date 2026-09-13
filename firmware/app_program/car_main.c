@@ -17,6 +17,10 @@
  * telemetry struct in this file is protected by g_telemetry_mutex as the
  * worked example. Kernel types (INT, ID, ER, UB) appear only where the
  * kernel API requires them.
+ *
+ * Owner: the team. This is the integration surface and has no single buddy.
+ * The state transitions are filled in together once the subsystems below them
+ * work.
  */
 
 #include <stdbool.h>

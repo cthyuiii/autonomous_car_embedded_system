@@ -27,6 +27,27 @@ tree except the three places listed under Kernel notes.
 Each subsystem folder holds its public header under `include/`, the stubs,
 a host test, a hardware bench and a README with its calibration table.
 
+## Who edits what
+
+| Owner   | Files                                                     |
+|---------|-----------------------------------------------------------|
+| Buddy 1 | `app_program/comms/`, plus the `COMMS_*` config block      |
+| Buddy 2 | `app_program/motion/`, plus `MOTOR_*`, `ENCODER_*`, `MOTION_*` |
+| Buddy 3 | `app_program/line_barcode/`, plus `LINE_*`, `TRACK_*`     |
+| Buddy 4 | `app_program/imu_terrain/`, plus `IMU_*`                  |
+| Buddy 5 | `app_program/scanning/`, plus `SONAR_*`, `SERVO_*`, `SCAN_*` |
+| Team    | `car_main.c`, `car_types.h`, `car_log.h`, `CAR_*`, `subdir.mk` |
+| Nobody  | Everything else under `firmware/`. That is the kernel     |
+
+Each buddy owns all five files in their folder: the header, the stub, the
+test, the bench and the README. The kernel tree has exactly three edits,
+listed under Kernel notes; leave the rest alone.
+
+Every file you own says so in its header comment. In your folder, `<name>.c`
+is where the work is; the header changes only by agreement; the test grows
+and never shrinks; the bench is yours to extend; the README table is where
+your measurements go.
+
 ## Every file and its status
 
 Three words are used below. **Finished** means there is nothing to write.
@@ -64,7 +85,7 @@ write. **Skeleton** means the structure runs but the decisions are `TODO`.
 
 ### Each subsystem folder
 
-The same six files live in `comms/`, `motion/`, `line_barcode/`,
+The same five files live in `comms/`, `motion/`, `line_barcode/`,
 `imu_terrain/` and `scanning/`:
 
 - `include/<name>.h`, finished. The public API with units, contracts and

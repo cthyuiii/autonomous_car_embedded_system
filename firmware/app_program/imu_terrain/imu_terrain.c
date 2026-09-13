@@ -5,6 +5,9 @@
  * NOTE: Register addresses and scale factors come from the LSM303DLHC
  * datasheet, sections on CTRL_REG1_A, CRA_REG_M and the output registers.
  * Cite the section beside each constant when adding it.
+ *
+ * Owner: Buddy 4, IMU based motion and terrain monitoring. Implement the TODOs
+ * in this file. It is yours.
  */
 
 #include "imu_terrain.h"

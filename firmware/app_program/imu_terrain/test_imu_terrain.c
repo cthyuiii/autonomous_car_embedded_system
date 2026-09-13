@@ -1,6 +1,9 @@
 /** @file test_imu_terrain.c
  *
  * @brief Host contract test for the IMU module. No hardware needed.
+ *
+ * Owner: Buddy 4, IMU based motion and terrain monitoring. Add an assert for
+ * every new guarantee and never delete one to make it pass.
  */
 
 #include <assert.h>

@@ -1,5 +1,7 @@
 # motion
 
+Owner: Buddy 2, motion control.
+
 Owns motor PWM, encoder counting, PID speed control, distance and turns.
 API is `include/motion.h`. Knobs are `MOTOR_*`, `ENCODER_*` and `MOTION_*`
 in `common/car_config.h`. Direction comes from the commanded sign, since a

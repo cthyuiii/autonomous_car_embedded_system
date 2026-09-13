@@ -1,6 +1,9 @@
 /** @file test_scanning.c
  *
  * @brief Host contract test for the scanning module. No hardware needed.
+ *
+ * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. Add an assert
+ * for every new guarantee and never delete one to make it pass.
  */
 
 #include <assert.h>

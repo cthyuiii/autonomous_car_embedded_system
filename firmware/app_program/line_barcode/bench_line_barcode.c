@@ -6,6 +6,9 @@
  * IR sensors attached. Slide the car across the line by hand: the mask
  * should walk 001, 011, 010, 110, 100 and the error should change sign at
  * the centre. Any decoded barcode is printed as it completes.
+ *
+ * Owner: Buddy 3, barcode decoding and IR line following. Extend it as you
+ * need; nothing else depends on it.
  */
 
 #include <stdint.h>

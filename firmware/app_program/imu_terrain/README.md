@@ -1,5 +1,7 @@
 # imu_terrain
 
+Owner: Buddy 4, IMU based motion and terrain monitoring.
+
 Owns the LSM303DLHC, tilt, hump detection and peak height, motion event
 classification, collision detection and turn rate. API is
 `include/imu_terrain.h`. Knobs are `IMU_*` in `common/car_config.h`.

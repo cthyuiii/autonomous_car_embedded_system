@@ -19,6 +19,10 @@
  * stationary. Five coarse angles is at least 300 ms before servo travel.
  *
  * Units: angles in degrees where 90 is straight ahead, distances in mm.
+ *
+ * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. A changed
+ * signature here also changes the test, the bench and car_main.c, so agree it
+ * with the team first.
  */
 
 #ifndef SCANNING_H

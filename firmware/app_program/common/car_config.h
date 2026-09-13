@@ -5,6 +5,8 @@
  * NOTE: Pins marked verified come from the board maker's own example code.
  * Everything else is a starting guess that the bench programs exist to
  * replace with a measurement. Change values here, never in the modules.
+ *
+ * Owner: each block group below names the buddy who owns its values.
  */
 
 #ifndef CAR_CONFIG_H
@@ -20,6 +22,7 @@
  * Maker ports for sensors. The car needs nine of them.
  */
 
+/* Owner: Buddy 2, motion control. The values down to the next owner line. */
 /* Motor driver, on the board. Two PWM pins per motor, verified. PWM
  * frequency is the board maker's example value. */
 #define MOTOR_LEFT_IN1_PIN             8u   // M1A, verified
@@ -49,6 +52,7 @@
 #define MOTION_DEFAULT_SPEED_MM_PER_SEC 200u
 #define MOTION_MAX_SPEED_MM_PER_SEC  400u   // TODO: measure at full duty
 
+/* Owner: Buddy 3, line and barcode. The values down to the next owner line. */
 /* Line sensors, three IR reflective sensors on the three ADC capable pins,
  * so either the digital LM393 modules or the analog TCRT5000 path fits
  * without moving a wire. See line_barcode.h for the tradeoff. */
@@ -70,6 +74,7 @@
 #define TRACK_BARCODE_GAP_MM          18u
 #define TRACK_BARCODE_LENGTH_MM      141u
 
+/* Owner: Buddy 4, IMU and terrain. The values down to the next owner line. */
 /* IMU, an LSM303DLHC on I2C0. Accelerometer and magnetometer answer at two
  * different addresses on the same bus. */
 #define IMU_I2C_INDEX                  0u   // Kernel I2C device unit
@@ -83,6 +88,7 @@
 #define IMU_COLLISION_THRESHOLD_MILLI_G 2000u  // TODO: tune, 2 g is a guess
 #define IMU_TURN_RATE_FROM_ENCODERS    1u   // 1 encoders, 0 magnetometer
 
+/* Owner: Buddy 5, scanning. The values down to the next owner line. */
 /* Ultrasonic ranging, an HC-SR04 on a Grove port. Values marked datasheet
  * are from it. WARNING: Echo is a 5 V output. Divide it down before the
  * Pico pin; the board adds no level shifting. */
@@ -113,6 +119,7 @@
 #define SCAN_OBSTACLE_RANGE_MM       200u   // TODO: tune, trigger distance
 #define SCAN_CLEARANCE_MIN_MM        150u   // TODO: car width plus margin
 
+/* Owner: Buddy 1, comms. The values down to the next owner line. */
 /* WiFi and MQTT. The kernel reads the SSID and password from its own
  * config/wifi_credentials.h, which git ignores. Nothing secret lives here. */
 #define COMMS_MQTT_BROKER_HOST   "192.168.1.10"   // TODO: confirm broker IP
@@ -127,6 +134,7 @@
 #define COMMS_HEARTBEAT_PERIOD_MSEC 1000u
 #define COMMS_RECONNECT_BACKOFF_MSEC 5000u
 
+/* Owner: the team. The values down to the next owner line. */
 /* Vehicle controller timing. */
 #define CAR_MISSION_PERIOD_MSEC       10u
 #define CAR_TELEMETRY_PERIOD_MSEC    200u

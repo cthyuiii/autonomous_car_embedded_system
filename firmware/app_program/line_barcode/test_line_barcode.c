@@ -1,6 +1,9 @@
 /** @file test_line_barcode.c
  *
  * @brief Host contract test for line following and barcode decoding.
+ *
+ * Owner: Buddy 3, barcode decoding and IR line following. Add an assert for
+ * every new guarantee and never delete one to make it pass.
  */
 
 #include <assert.h>

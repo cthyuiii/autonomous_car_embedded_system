@@ -1,5 +1,7 @@
 # line_barcode
 
+Owner: Buddy 3, barcode decoding and IR line following.
+
 Owns the three IR sensors, calibration, line position, junction detection,
 barcode decoding and the navigation command it produces. API is
 `include/line_barcode.h`. Knobs are `LINE_*` and `TRACK_*` in

@@ -1,5 +1,7 @@
 # scanning
 
+Owner: Buddy 5, ultrasonic scanning and obstacle profiling.
+
 Owns the scan servo, HC-SR04 ranging, coarse and fine scans, obstacle
 profiling, avoidance planning and line recovery. API is
 `include/scanning.h`. Knobs are `SONAR_*`, `SERVO_*` and `SCAN_*` in

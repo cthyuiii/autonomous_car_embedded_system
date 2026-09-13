@@ -9,6 +9,10 @@
  *
  * Units: angles in degrees, rates in degrees per second, acceleration in
  * milli g, heights in mm, time in milliseconds.
+ *
+ * Owner: Buddy 4, IMU based motion and terrain monitoring. A changed signature
+ * here also changes the test, the bench and car_main.c, so agree it with the
+ * team first.
  */
 
 #ifndef IMU_TERRAIN_H

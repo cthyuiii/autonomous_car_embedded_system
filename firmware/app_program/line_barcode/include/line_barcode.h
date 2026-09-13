@@ -15,6 +15,10 @@
  * and line, and a barcode about 141 mm long. At speed v mm per second the
  * narrowest bar passes the sensor in width / v seconds, which bounds
  * LINE_SAMPLE_PERIOD_MSEC. Faster driving needs faster sampling.
+ *
+ * Owner: Buddy 3, barcode decoding and IR line following. A changed signature
+ * here also changes the test, the bench and car_main.c, so agree it with the
+ * team first.
  */
 
 #ifndef LINE_BARCODE_H

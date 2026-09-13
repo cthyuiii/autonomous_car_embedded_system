@@ -4,6 +4,9 @@
  *
  * NOTE: Range in mm is echo microseconds * 10 / SONAR_USEC_PER_CM, using
  * the conversion the HC-SR04 datasheet gives. No floating point needed.
+ *
+ * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. Implement the
+ * TODOs in this file. It is yours.
  */
 
 #include "scanning.h"

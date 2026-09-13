@@ -5,6 +5,9 @@
  * Units throughout: distance mm, speed mm per second, angle degrees, time
  * milliseconds. Every function is non blocking. Call motion_tick() at a fixed
  * rate and poll motion_is_busy() to learn when a move has finished.
+ *
+ * Owner: Buddy 2, motion control. A changed signature here also changes the
+ * test, the bench and car_main.c, so agree it with the team first.
  */
 
 #ifndef MOTION_H

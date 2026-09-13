@@ -7,6 +7,9 @@
  * the printed range and the angle it appears at. Then reduce
  * SERVO_SETTLE_MSEC until readings smear, and back off. That is the settle
  * time to record.
+ *
+ * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. Extend it as you
+ * need; nothing else depends on it.
  */
 
 #include <stdint.h>

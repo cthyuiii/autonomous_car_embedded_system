@@ -1,5 +1,7 @@
 # comms
 
+Owner: Buddy 1, WiFi communication, command and telemetry.
+
 Owns WiFi association, the MQTT session, telemetry and heartbeat publishing,
 command subscription and reconnection. API is `include/comms.h`. Knobs are
 the `COMMS_*` constants in `common/car_config.h`.

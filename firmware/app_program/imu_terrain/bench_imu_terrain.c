@@ -7,6 +7,9 @@
  * it and watch heading wrap at 360. Then mount it on the car, run the
  * motors with the car held still, and watch how far heading moves with no
  * rotation. That number is the magnetometer's motor disturbance.
+ *
+ * Owner: Buddy 4, IMU based motion and terrain monitoring. Extend it as you
+ * need; nothing else depends on it.
  */
 
 #include <stdint.h>

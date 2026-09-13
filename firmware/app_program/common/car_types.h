@@ -4,6 +4,9 @@
  *
  * NOTE: If a type is only used inside one module it does not belong here.
  * Keeping this file small keeps the five subsystems loosely coupled.
+ *
+ * Owner: the team. Change only by agreement, since every module and every test
+ * depends on it.
  */
 
 #ifndef CAR_TYPES_H
