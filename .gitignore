@@ -57,5 +57,26 @@ dkms.conf
 # debug information files
 *.dwo
 
-# Firmware build output
-firmware/build/
+
+# macOS
+.DS_Store
+
+# Kernel build output. The UF2 tool is compiled on the first build.
+*.uf2
+firmware/build_make/tools/elf2uf2
+firmware/tools/elf2uf2/elf2uf2
+firmware/build_make/.build_profile
+
+# Host test binaries
+firmware/build_host/
+
+# Local WiFi credentials and network settings. Copy the .example.h files
+# in firmware/config/ to these names and edit them. Never commit them.
+firmware/config/wifi_credentials.h
+firmware/config/network_config.h
+firmware/config/udp_test_config.h
+firmware/config/tcp_test_config.h
+
+# Python
+__pycache__/
+*.pyc
