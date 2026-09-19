@@ -2,18 +2,40 @@
 
 Owner: Buddy 3, barcode decoding and IR line following.
 
-Owns the three IR sensors, calibration, line position, junction detection,
+Owns the three IR sensors, line position, junction detection, Code 39
 barcode decoding and the navigation command it produces. API is
-`include/line_barcode.h`. Knobs are `LINE_*` and `TRACK_*` in
-`common/car_config.h`. Decide digital or analog first, see the header.
+`include/line_barcode.h`. Knobs are `LINE_*`, `TRACK_*` and `BARCODE_*` in
+`common/car_config.h`.
 
-Done means `test_line_barcode.c` passes on the host, `bench_line_barcode`
-shows a clean mask sweep by hand, and all four barcodes decode correctly
+Implemented for the three MH-Sensor-Series digital modules on Grove 5, 6
+and 1. The Grove 1 sensor sits on GP1, the port's white wire, because GP0
+is the console mirror's transmit line; see the root README before moving
+it. Position is a five step error from the 3 bit mask. The decoder
+times every bar and space the centre sensor sees with the microsecond
+timer, classifies the three widest of each nine as wide, checks both
+asterisks, and tries the sequence reversed, so a symbol reads from either
+end at any speed that still samples every bar. `LINE_SENSOR_DARK_LEVEL`
+is the one thing to confirm first: if the mask reads inverted, flip it.
+
+`line_get_raw_levels()` is the first thing to read: it is the electrical
+level on each pin before the dark level mapping, so it moves whichever way
+round a module's output is wired, and the bench counts every flip per
+sensor. A counter that never moves means nothing is reaching that pin.
+
+`line_get_health()` is the next: a sensor only counts as
+working once it has been seen both dark and light, and the bench prints
+its letter in capitals when it has. Three lower case letters with a steady
+`mask 111` is three sensors that have never changed, which is wiring, not
+a junction.
+
+Done means `test_line_barcode.c` passes on the host, all three health
+letters capitalise, `bench_line_barcode` shows a clean mask sweep by hand, and all four barcodes decode correctly
 ten times each at the speed the car will actually run.
 
 | Calibration                 | Measured | How                            |
 |-----------------------------|----------|--------------------------------|
-| Sensor ride height, mm      |          | TCRT5000 peaks at 2.5 mm       |
-| Dark and light reading      |          | per sensor, both surfaces      |
-| Narrow and wide bar samples |          | count at run speed             |
+| Sensor ride height, mm      |          | widest contrast on the bench   |
+| LINE_SENSOR_DARK_LEVEL      |          | mask over tape vs floor        |
+| Trimpot per module          |          | module LED flips on the line   |
 | Max speed that still decodes|          | raise until a symbol misreads  |
+| BARCODE_CHAR_* mapping      |          | from the course write-up       |

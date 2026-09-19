@@ -73,6 +73,16 @@ car_status_t comms_set_command_handler (comms_command_handler_t p_handler);
  */
 car_status_t comms_publish_heartbeat (void);
 
+#ifdef CAR_HOST_TEST
+/**
+ * @brief Host test hook: a payload the next comms_poll() receives.
+ *
+ * @param[in] p_text Payload bytes, need not be terminated.
+ * @param[in] length Payload length.
+ */
+void comms_host_inject (char const * p_text, uint16_t length);
+#endif
+
 #endif /* COMMS_H */
 
 /*** end of file ***/

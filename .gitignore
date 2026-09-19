@@ -66,6 +66,7 @@ dkms.conf
 firmware/build_make/tools/elf2uf2
 firmware/tools/elf2uf2/elf2uf2
 firmware/build_make/.build_profile
+firmware/build_make/mtkernel_3/app_program/.selected_*
 
 # Host test binaries
 firmware/build_host/

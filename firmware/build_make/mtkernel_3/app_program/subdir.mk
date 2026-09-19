@@ -13,8 +13,34 @@ APP_SRCS := $(filter-out $(wildcard ../app_program/*/bench_*.c \
                                     ../app_program/*/test_*.c), $(APP_SRCS))
 
 ifdef BENCH
-APP_SRCS := $(filter-out ../app_program/car_main.c, $(APP_SRCS)) \
-            ../app_program/$(BENCH)/bench_$(BENCH).c
+# Found by search rather than by folder, so a diagnostic bench can sit in
+# whichever subsystem owns the hardware it pokes at.
+BENCH_SRC := $(wildcard ../app_program/*/bench_$(BENCH).c)
+ifeq ($(BENCH_SRC),)
+$(error No bench called '$(BENCH)'. Look for app_program/*/bench_*.c)
+endif
+APP_SRCS := $(filter-out ../app_program/car_main.c, $(APP_SRCS)) $(BENCH_SRC)
+endif
+
+# make NO_RECOVER=1 builds the car so it never enters RECOVER_LINE. Folded
+# into the stamp below, because it changes no source file either.
+ifeq ($(NO_RECOVER),1)
+APP_DEFS := -DCAR_SKIP_LINE_RECOVERY=1
+endif
+
+# Switching between the car, a bench and NO_RECOVER changes the object list
+# or the defines, but touches no source, and make only compares timestamps,
+# so it would happily reuse the previous objects and flash the wrong
+# program. A stamp records which selection the objects were built from; when
+# it differs our objects and the image go, so both rules run again. Only our
+# objects, never this file or the kernel's, so it costs a few seconds.
+APP_SELECTED := mtkernel_3/app_program/.selected_$(if $(BENCH),$(BENCH),car)$(if $(APP_DEFS),_norecover,)
+ifeq ($(wildcard $(APP_SELECTED)),)
+$(shell mkdir -p mtkernel_3/app_program; \
+        rm -f mtkernel_3/app_program/.selected_* $(EXE_FILE).elf \
+              $(EXE_FILE).uf2; \
+        find mtkernel_3/app_program -name '*.o' -delete; \
+        touch $(APP_SELECTED))
 endif
 
 # Our headers only. The kernel's INCPATH already covers include/ and config/.
@@ -33,6 +59,6 @@ C_DEPS   += $(APP_OBJS:.o=.d)
 mtkernel_3/app_program/%.o: ../app_program/%.c
 	@mkdir -p "$(@D)"
 	@echo 'Building file: $<'
-	$(GCC) $(CFLAGS) -Wall -Wextra -D$(TARGET) $(INCPATH) $(APP_INCPATH) -MF"$(@:%.o=%.d)" -MT"$(@)" -c -o "$@" "$<"
+	$(GCC) $(CFLAGS) -Wall -Wextra -D$(TARGET) $(APP_DEFS) $(INCPATH) $(APP_INCPATH) -MF"$(@:%.o=%.d)" -MT"$(@)" -c -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '

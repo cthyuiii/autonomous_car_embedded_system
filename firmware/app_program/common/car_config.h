@@ -16,11 +16,37 @@
  * Board: Cytron Robo Pico carrying a Raspberry Pi Pico W. The board owns
  * GP8 to GP11 (motor driver), GP12 to GP15 (servo headers S1 to S4), GP18
  * (two NeoPixels), GP20 and GP21 (buttons) and GP22 (buzzer). The Pico W
- * radio owns GP23, GP24, GP25 and GP29. The kernel console is UART0 on GP0
- * and GP1, which is Grove port 1, even in the USB console profile. That
- * leaves GP2 to GP7, GP16, GP17, GP19 and GP26 to GP28 on the Grove and
- * Maker ports for sensors. The car needs nine of them.
+ * radio owns GP23, GP24, GP25 and GP29.
+ *
+ * Grove ports as wired on this car. Each port brings out two GPIO plus
+ * 3.3 V and ground; the first listed pin is the cable's yellow wire, the
+ * second its white wire.
+ *
+ *   Grove 1  GP0, GP1    right line sensor on GP1, the WHITE wire
+ *   Grove 2  GP2, GP3    left wheel encoder on GP2
+ *   Grove 3  GP4, GP5    LSM303DLHC compass on I2C0
+ *   Grove 4  GP16, GP17  HC-SR04 trigger and echo
+ *   Grove 5  GP6, GP26   left line sensor on GP6
+ *   Grove 6  GP26, GP27  centre line sensor on GP26
+ *   Grove 7  GP7, GP28   right wheel encoder on GP7
+ *
+ * NOTE: Grove 1 is the kernel's UART0 console: GP0 transmits, GP1 receives.
+ * The console you read is USB, and UART0 is only a mirror of it, so both
+ * pins can be taken back for sensors by muxing them to GPIO, which
+ * line_init() does. Only GP1 is used, because GP0 is driven by the mirror
+ * from boot until line_init() runs and must not meet a sensor output. The
+ * yellow wire of the Grove 1 cable stays unconnected. This needs the USB
+ * console build; line_barcode.c refuses to compile it for CONSOLE=uart.
+ *
+ * NOTE: GP26 is shared between Grove 5 and Grove 6. The plan above takes
+ * it from Grove 6 only, so the white wire of Grove 5 must stay unused.
  */
+
+/* Owner: the team. The car's own size, measured with a ruler. Anything
+ * that has to fit past, around or between something derives from these
+ * two rather than carrying its own guess. */
+#define CAR_WIDTH_MM                 150u   // Across the front
+#define CAR_LENGTH_MM                200u   // Front bumper to the back
 
 /* Owner: Buddy 2, motion control. The values down to the next owner line. */
 /* Motor driver, on the board. Two PWM pins per motor, verified. PWM
@@ -31,69 +57,141 @@
 #define MOTOR_RIGHT_IN2_PIN           11u   // M2B, verified
 #define MOTOR_PWM_FREQ_HZ          10000u   // TODO: tune on hardware
 #define MOTOR_PWM_MAX_DUTY          1000u   // Duty is expressed per mille.
+#define MOTOR_MIN_DUTY               150u   // TODO: measure, lowest that moves
 
-/* Wheel encoders, one TCRT5000 plus LM393 per wheel, one channel each, on
- * a Grove port. NOTE: A single channel cannot sense direction. Direction
- * is taken from the commanded motor sign instead. The RP2040 raises one
- * interrupt for the whole GPIO bank; the handler sorts out which pin. */
-#define ENCODER_LEFT_PIN               6u   // TODO: confirm Grove port
-#define ENCODER_RIGHT_PIN              7u   // TODO: confirm Grove port
-#define ENCODER_IRQ_NUM               13u   // IO_IRQ_BANK0, TODO: confirm
-#define ENCODER_IRQ_LEVEL              2    // TODO: confirm kernel levels
-#define ENCODER_SLOTS_PER_REV         20u   // TODO: count the disc slots
+/* Wheel encoders, the Hall sensor built into each geared motor, A phase
+ * only, one per Grove port. NOTE: A single channel cannot sense direction.
+ * Direction is taken from the commanded motor sign instead. The RP2040
+ * raises one interrupt for the whole GPIO bank; the handler sorts out which
+ * pin. MOTION_OPEN_LOOP is 1 while the encoders are not yet wired: moves and
+ * turns are then timed from the speed setpoint instead of counted. Set it to
+ * 0 the day both encoders are connected. TODO: flip when encoders arrive. */
+#define ENCODER_LEFT_PIN               2u   // Grove 2 yellow
+#define ENCODER_RIGHT_PIN              7u   // Grove 7 yellow
+#define ENCODER_IRQ_NUM               13u   // IO_IRQ_BANK0, RP2040 datasheet
+#define ENCODER_IRQ_LEVEL              2    // Same level the I2C driver uses
+#define ENCODER_SLOTS_PER_REV         20u   // TODO: count pulses per wheel turn
+#define ENCODER_STALL_TIMEOUT_MSEC   300u   // No pulse for this long is stopped
 #define WHEEL_CIRCUMFERENCE_MM       204u   // TODO: measure, roll one turn
 #define WHEEL_BASE_MM                150u   // TODO: measure, centre to centre
+#define MOTION_OPEN_LOOP               1u   // 1 no encoders yet, 0 closed loop
 
 /* Motion control loop. Gains are in thousandths to avoid floating point. */
 #define MOTION_TICK_PERIOD_MSEC       10u
 #define MOTION_PID_KP_MILLI          500u   // TODO: tune on hardware
 #define MOTION_PID_KI_MILLI           50u   // TODO: tune on hardware
 #define MOTION_PID_KD_MILLI           10u   // TODO: tune on hardware
+#define MOTION_PID_INTEGRAL_LIMIT  20000    // Anti windup, in mm/s * ticks
 #define MOTION_DEFAULT_SPEED_MM_PER_SEC 200u
-#define MOTION_MAX_SPEED_MM_PER_SEC  400u   // TODO: measure at full duty
+/* Speed at full duty. This is what converts a speed request into a duty,
+ * and in the open loop build it is also what converts that duty back into
+ * the distance travelled, so a wrong value scales every move and every
+ * turn by the same factor. Derived 2026-09-19 from a 45 degree turn that
+ * came out at roughly 180, so the car was running about four times the
+ * commanded speed: 400 * 4. TODO: measure it properly, see the motion
+ * README, this is still an eyeballed ratio.
+ *
+ * NOTE: MOTOR_MIN_DUTY sets the slowest the car can actually go, which at
+ * these numbers is 150/1000 * 1600 = 240 mm/s. Requests below that are
+ * floored, so CAR_BARCODE_SPEED_MM_PER_SEC cannot be honoured until
+ * MOTOR_MIN_DUTY is measured and lowered. */
+#define MOTION_MAX_SPEED_MM_PER_SEC 1600u   // TODO: measure at full duty
+#define MOTION_MAX_STEER_PERMILLE   2000    // Over 1000 reverses inner wheel
 
 /* Owner: Buddy 3, line and barcode. The values down to the next owner line. */
-/* Line sensors, three IR reflective sensors on the three ADC capable pins,
- * so either the digital LM393 modules or the analog TCRT5000 path fits
- * without moving a wire. See line_barcode.h for the tradeoff. */
-#define LINE_SENSOR_LEFT_PIN          26u   // TODO: confirm Grove port
-#define LINE_SENSOR_CENTRE_PIN        27u   // TODO: confirm Grove port
-#define LINE_SENSOR_RIGHT_PIN         28u   // TODO: confirm Grove port
-#define LINE_SENSOR_IS_ANALOG          0u   // 0 LM393 digital, 1 TCRT5000 ADC
-#define LINE_ANALOG_THRESHOLD       2048u   // TODO: calibrate, 12 bit ADC
+/* Line sensors, three MH-Sensor-Series IR reflective modules with an LM393
+ * comparator and a digital output, one per Grove port. NOTE: On this port
+ * layout only the centre sensor sits on an ADC capable pin, so the analog
+ * path is no longer available and LINE_SENSOR_IS_ANALOG must stay 0. */
+#define LINE_SENSOR_LEFT_PIN           6u   // Grove 5 yellow
+#define LINE_SENSOR_CENTRE_PIN        26u   // Grove 6 yellow
+#define LINE_SENSOR_RIGHT_PIN          1u   // Grove 1 WHITE, see the note
+#define LINE_SENSOR_IS_ANALOG          0u   // Must stay 0 on this layout
+#define LINE_SENSOR_DARK_LEVEL         1u   // TODO: confirm, level over black
+
+/* Pin pull. WARNING: This and LINE_SENSOR_DARK_LEVEL must disagree, or a
+ * disconnected sensor reads as if it were over the line and mask 111 looks
+ * exactly like a junction. Pull down with dark level 1 means a loose wire
+ * reads 0, which shows up as a lost line instead of a false junction. Set
+ * this to 1 only if a module pulls its output low but never drives it
+ * high, which line_get_health() will show as a sensor that never reads
+ * dark. */
+#define LINE_SENSOR_PULL_UP            0u   // 0 pull down, 1 pull up
+#define LINE_JUNCTION_SAMPLES          2u   // All three dark for this many
 
 /* Line sampling period. The kernel tick is CNF_TIMER_PERIOD in
  * config/config.h, 10 ms as shipped, and a task delay rounds up to it. At
  * 200 mm per second a 10 ms sample is 2 mm of travel; at 400 it is 4 mm.
- * TODO: If the narrowest bar gets fewer than three samples at run speed,
- * lower CNF_TIMER_PERIOD and this value together. */
+ * The barcode decoder times bars with the microsecond timer, so sampling
+ * only has to catch every transition: the narrowest bar must last longer
+ * than one sample period. TODO: If the narrowest bar gets fewer than two
+ * samples at run speed, lower CNF_TIMER_PERIOD and this value together. */
 #define LINE_SAMPLE_PERIOD_MSEC       10u
 
-/* Track geometry from the course specification. */
+/* Track geometry from the course specification. A 141 mm barcode is one
+ * Code 39 character between its start and stop symbols at a 3 mm narrow
+ * element: 47 narrow widths in total. */
 #define TRACK_LINE_WIDTH_MM           20u
 #define TRACK_BARCODE_GAP_MM          18u
 #define TRACK_BARCODE_LENGTH_MM      141u
+#define BARCODE_NARROW_MM              3u
+#define BARCODE_MAX_ELEMENT_MSEC     500u   // Longer runs reset the decoder
+
+/* Code 39 characters that carry each navigation command.
+ * TODO: confirm against the course write-up. */
+#define BARCODE_CHAR_LEFT             'L'
+#define BARCODE_CHAR_RIGHT            'R'
+#define BARCODE_CHAR_STRAIGHT         'S'
+#define BARCODE_CHAR_UTURN            'U'
 
 /* Owner: Buddy 4, IMU and terrain. The values down to the next owner line. */
-/* IMU, an LSM303DLHC on I2C0. Accelerometer and magnetometer answer at two
- * different addresses on the same bus. */
-#define IMU_I2C_INDEX                  0u   // Kernel I2C device unit
-#define IMU_I2C_SDA_PIN                4u   // TODO: confirm Grove port
-#define IMU_I2C_SCL_PIN                5u   // TODO: confirm Grove port
-#define IMU_I2C_BAUD_HZ           400000u
-#define IMU_ACCEL_I2C_ADDR          0x19u   // TODO: confirm, LSM303DLHC sheet
-#define IMU_MAG_I2C_ADDR            0x1Eu   // TODO: confirm, LSM303DLHC sheet
+/* IMU, an LSM303DLHC on I2C0 through Grove 3. Accelerometer and
+ * magnetometer answer at two different addresses on the same bus. The
+ * kernel driver defaults I2C0 to GP8 and GP9, which are the motor pins, so
+ * imu_init() moves the peripheral to the pins below itself. */
+#define IMU_I2C_DEVICE_NAME       "iica"    // Kernel I2C unit 0
+#define IMU_I2C_SDA_PIN                4u   // Grove 3 white
+#define IMU_I2C_SCL_PIN                5u   // Grove 3 yellow
+#define IMU_ACCEL_I2C_ADDR          0x19u   // LSM303DLHC datasheet, SAD accel
+#define IMU_MAG_I2C_ADDR            0x1Eu   // LSM303DLHC datasheet, SAD mag
 #define IMU_SAMPLE_PERIOD_MSEC        10u   // 100 Hz
+#define IMU_FILTER_SHIFT               4u   // Low pass, alpha is 1 over 2^n
+#define IMU_CALIBRATION_SAMPLES       32u   // Level reference average
+/* Pitch is the direction of apparent gravity, so it is only meaningful
+ * while the car is neither accelerating nor shaking. A running motor makes
+ * the chassis vibrate and the vector wander, which reads as tilt that is
+ * not there. Pitch is therefore frozen whenever the filtered acceleration
+ * magnitude strays this far from one g. Widen it if pitch stops responding
+ * on a real slope, narrow it if a vibrating car still reports tilt. */
+#define IMU_PITCH_TRUST_BAND_MILLI_G 300u   // Was 150u, mast mount shakes
 #define IMU_HUMP_PITCH_THRESHOLD_DEG   5u   // TODO: tune on the real hump
-#define IMU_COLLISION_THRESHOLD_MILLI_G 2000u  // TODO: tune, 2 g is a guess
+/* Accelerometer full scale. 0 is plus or minus 2 g, 1 is 4 g, 2 is 8 g,
+ * 3 is 16 g, and the milli g per count doubles with each step. The part
+ * saturates at its full scale, so this is the hard ceiling on what a
+ * collision can ever read: at 2 g a bumper knock is clipped to 2000 and
+ * IMU_COLLISION_THRESHOLD_MILLI_G above 1000 can never be met. 8 g gives
+ * room for a real impact and costs a little pitch resolution. */
+#define IMU_ACCEL_FS_SELECT            2u   // 0 is 2 g, 2 is 8 g
+#define IMU_ACCEL_MG_PER_LSB           4u   // 1 << IMU_ACCEL_FS_SELECT
+#define IMU_COLLISION_THRESHOLD_MILLI_G  600u  // Over 1 g. Tune on peak
+#define IMU_ACCEL_EVENT_MILLI_G      250u   // TODO: tune, forward accel event
+#define IMU_TURN_EVENT_DPS            30u   // TODO: tune, turning event
+#define IMU_EVENT_HOLD_SAMPLES        10u   // Samples an event is held for
 #define IMU_TURN_RATE_FROM_ENCODERS    1u   // 1 encoders, 0 magnetometer
+#define IMU_PITCH_SIGN                 1    // TODO: confirm, nose up positive
+/* Terrain roughness is the smoothed distance of the gravity vector from
+ * one g, so it is near zero on a smooth floor and climbs with every bump.
+ * The shift is the filter weight, the threshold is where stable ends. */
+#define IMU_ROUGHNESS_SHIFT            4u   // Low pass, alpha is 1 over 2^n
+#define IMU_TERRAIN_ROUGH_MILLI_G    120u   // TODO: tune on the real course
 
 /* Owner: Buddy 5, scanning. The values down to the next owner line. */
-/* Ultrasonic ranging, an HC-SR04 on a Grove port. Values marked datasheet
- * are from it. WARNING: Echo is a 5 V output. Divide it down before the
- * Pico pin; the board adds no level shifting. */
-#define SONAR_TRIG_PIN                16u   // TODO: confirm Grove port
-#define SONAR_ECHO_PIN                17u   // TODO: confirm Grove port
+/* Ultrasonic ranging, an HC-SR04 on Grove 4. Values marked datasheet are
+ * from it. NOTE: The module is powered from the Grove port's 3.3 V, on
+ * purpose, so its echo output is a 3.3 V signal and needs no divider. The
+ * price is maximum range, which is measured on the bench. */
+#define SONAR_TRIG_PIN                16u   // Grove 4 yellow
+#define SONAR_ECHO_PIN                17u   // Grove 4 white
 #define SONAR_TRIG_PULSE_USEC         10u   // Datasheet minimum.
 #define SONAR_USEC_PER_CM             58u   // Datasheet conversion.
 #define SONAR_MIN_CYCLE_MSEC          60u   // Datasheet minimum cycle.
@@ -104,25 +202,116 @@
 
 /* Scan servo on header S1. The header is powered from the board's motor
  * rail, so the servo needs the battery, not USB power alone. Pulse range
- * is the board maker's calibrated example; the end stops vary per servo. */
+ * is the board maker's calibrated example; the end stops vary per servo.
+ * Angle 90 is straight ahead; angles above 90 look to the car's left.
+ * TODO: confirm the direction on the bench and swap the pulse ends if not. */
 #define SERVO_PIN                     12u   // S1, verified
 #define SERVO_PWM_FREQ_HZ             50u   // Verified example value
-#define SERVO_PULSE_MIN_USEC         580u   // TODO: find the end stop
-#define SERVO_PULSE_MAX_USEC        2700u   // TODO: find the end stop
+/* Servo position is a pulse width, and the width below is the horn's
+ * straight ahead as it is actually mounted on this car. Angles are measured
+ * from it, rather than mapped across a 0 to 180 range, so that no commanded
+ * angle can put the horn anywhere but a few degrees either side of where it
+ * already rests.
+ *
+ * WARNING: A servo has no position feedback. The firmware cannot know where
+ * the horn is until it sends a pulse, and the horn then jumps to whatever
+ * that pulse says. That first jump is the one large movement the car ever
+ * makes, and its size is the gap between where the horn was left and
+ * SERVO_CENTRE_PULSE_USEC. Measure the width that points the horn straight
+ * ahead with BENCH=servo and its centre finder, set it here, and the jump
+ * disappears. */
+#define SERVO_CENTRE_PULSE_USEC     1744u   // Measured on this car's mount
+#define SERVO_USEC_PER_DEG            11u   // TODO: confirm, 1000 us per 90 deg
+
+/* Hard limits on the computed pulse, the last line of defence. 1000 to
+ * 2000 is the range every hobby servo accepts; most accept rather more.
+ * The ceiling is above 2000 because this car's centre sits high at 1744,
+ * so 115 degrees needs 2019 and would otherwise clamp silently to about
+ * 113. If the horn binds at the top of the sweep, put this back to 2000
+ * and the clamp will protect it again. */
+#define SERVO_PULSE_MIN_USEC        1000u
+#define SERVO_PULSE_MAX_USEC        2100u
 #define SERVO_TRAVEL_DEG             180u   // TODO: confirm for this servo
 #define SERVO_SETTLE_MSEC            200u   // TODO: find on the bench
 
-/* Scan pattern and avoidance thresholds. */
-#define SCAN_COARSE_ANGLES_DEG      { 30u, 60u, 90u, 120u, 150u }
-#define SCAN_COARSE_ANGLE_COUNT        5u
-#define SCAN_FINE_STEP_DEG            15u   // WARNING: not below beam angle
+/* Travel actually used. The servo reaches 0 to SERVO_TRAVEL_DEG, but the
+ * mount, the wiring loom and the car's own body allow far less. Change
+ * SCAN_HALF_SWEEP_DEG alone and every angle below follows it, including
+ * the servo bench, so there is one number to edit and nothing to keep in
+ * step by hand. scan_measure() clamps every commanded angle into the band,
+ * so no code path can drive the horn into something.
+ *
+ * NOTE: At 25 degrees either side the three angles are 25 degrees apart,
+ * which finally clears the sonar's own 15 degree beam. The left and right
+ * readings are therefore independent of the centre one, and the clearance
+ * either side of an obstacle means something for the first time, so
+ * scan_plan_avoidance() can choose a side instead of always reversing.
+ * Narrower than about 15 either side and all three readings fall inside
+ * one beam again; see the scanning README. */
+#define SCAN_CENTRE_ANGLE_DEG         90u   // Straight ahead
+#define SCAN_HALF_SWEEP_DEG           25u   // 65, 90 and 115 degrees
+#define SCAN_MIN_ANGLE_DEG   (SCAN_CENTRE_ANGLE_DEG - SCAN_HALF_SWEEP_DEG)
+#define SCAN_MAX_ANGLE_DEG   (SCAN_CENTRE_ANGLE_DEG + SCAN_HALF_SWEEP_DEG)
+
+/* Scan pattern and avoidance thresholds. The coarse set spans the band in
+ * three steps; more would only re-read the same beam. */
+#define SCAN_COARSE_ANGLES_DEG   { SCAN_MIN_ANGLE_DEG, SCAN_CENTRE_ANGLE_DEG, \
+                                   SCAN_MAX_ANGLE_DEG }
+#define SCAN_COARSE_ANGLE_COUNT        3u
+/* Half the sweep, so a fine scan puts a reading between each pair of
+ * coarse angles: 65, 77, 89, 101, 113. The coarse set stays at three, so
+ * the scan that decides whether anything is there is still quick, and only
+ * the profiling scan pays for the extra two readings. The floor keeps the
+ * step at one degree or more whatever the sweep shrinks to, because a zero
+ * step would leave scan_fine() unable to advance. */
+#define SCAN_FINE_STEP_DEG \
+    (((SCAN_HALF_SWEEP_DEG / 2u) > 0u) ? (SCAN_HALF_SWEEP_DEG / 2u) : 1u)
+#define SCAN_FINE_HALF_SPAN_DEG SCAN_HALF_SWEEP_DEG
 #define SCAN_OBSTACLE_RANGE_MM       200u   // TODO: tune, trigger distance
-#define SCAN_CLEARANCE_MIN_MM        150u   // TODO: car width plus margin
+/* A lane is only a lane if the whole car fits down it with room to be
+ * steered, so this is the car plus 50 mm each side. */
+#define SCAN_CLEARANCE_MIN_MM  (CAR_WIDTH_MM + 100u)
+#define SCAN_DETOUR_TURN_DEG          45u   // Each leg of the box detour
+/* Every detour leg is sized from the car, not guessed. Sideways has to
+ * move the car's own half width plus the obstacle's, and forward has to
+ * carry the whole car past the obstacle before it turns back in. */
+#define SCAN_DETOUR_SIN45_RECIP     1414u   // 1 / sin 45, times 1000
+#define SCAN_DETOUR_MARGIN_MM  ((CAR_WIDTH_MM / 2u) + 50u)  // Half plus slack
+/* Fallback legs, used when the fine scan could not measure a width: the
+ * same sums with the obstacle taken as a point. The sideways leg is the
+ * clearance divided by sin 45, because the car travels it at
+ * SCAN_DETOUR_TURN_DEG rather than straight sideways. */
+#define SCAN_DETOUR_SIDE_MM \
+    ((SCAN_DETOUR_MARGIN_MM * SCAN_DETOUR_SIN45_RECIP) / 1000u)
+#define SCAN_DETOUR_DEPTH_MM   (CAR_LENGTH_MM + SCAN_DETOUR_MARGIN_MM)
+/* When a width was measured, the legs are sized from it instead: half
+ * the obstacle to get clear of its edge, plus the car's own half width
+ * and a margin, all divided by sin 45 for the diagonal. Depth is the
+ * width plus CAR_LENGTH_MM, because nothing measures how deep an obstacle
+ * is from the front, and the back of the car is still beside it when the
+ * bumper has cleared. Both are clamped so a bad reading cannot send the
+ * car across the room or clip the obstacle. The minima are the fallback
+ * legs: nothing measured can justify less room than a point obstacle. */
+#define SCAN_DETOUR_SIDE_MIN_MM      SCAN_DETOUR_SIDE_MM
+#define SCAN_DETOUR_SIDE_MAX_MM      500u
+#define SCAN_DETOUR_DEPTH_MIN_MM     SCAN_DETOUR_DEPTH_MM
+#define SCAN_DETOUR_DEPTH_MAX_MM     600u
+#define SCAN_REVERSE_MM              100u   // Back off before probing a side
+/* Sweep the coarse angles while driving instead of staring straight
+ * ahead, so the car knows which side is open before it has to choose.
+ * The cost is real: the pattern is centre, side, centre, other side, so
+ * forward is only ranged on every other reading and an obstacle can be
+ * one reading closer before it is seen. Raise SCAN_OBSTACLE_RANGE_MM or
+ * drop the speed to pay for it, or set this to 0 to stare ahead. */
+#define SCAN_SWEEP_WHILE_MOVING        1u
+#define SCAN_RECOVER_TURN_DEG         15u   // Search arc step
+#define SCAN_RECOVER_DRIVE_MM         60u   // Search drive step
+#define SCAN_RECOVER_STEPS            12u   // Turn and drive pairs, then halt
 
 /* Owner: Buddy 1, comms. The values down to the next owner line. */
 /* WiFi and MQTT. The kernel reads the SSID and password from its own
  * config/wifi_credentials.h, which git ignores. Nothing secret lives here. */
-#define COMMS_MQTT_BROKER_HOST   "192.168.1.10"   // TODO: confirm broker IP
+#define COMMS_MQTT_BROKER_HOST   "192.168.50.131"   // TODO: confirm broker IP
 #define COMMS_MQTT_BROKER_PORT      1883u
 #define COMMS_MQTT_CLIENT_ID     "car"
 #define COMMS_TOPIC_TELEMETRY    "car/telemetry"
@@ -133,11 +322,68 @@
 #define COMMS_POLL_PERIOD_MSEC        10u
 #define COMMS_HEARTBEAT_PERIOD_MSEC 1000u
 #define COMMS_RECONNECT_BACKOFF_MSEC 5000u
+/* Telemetry is the longest payload and grew when the IMU block was
+ * added. Worst case with every field at its widest is 295 bytes,
+ * so this leaves room to add a field without silently truncating: the
+ * formatter drops a message that does not fit rather than sending half
+ * an object. */
+#define COMMS_PAYLOAD_MAX_BYTES      384u
 
 /* Owner: the team. The values down to the next owner line. */
-/* Vehicle controller timing. */
+/* Vehicle controller timing and the line following law. Steering is a
+ * proportional plus derivative correction on the sensor error, expressed in
+ * per mille of the set speed handed to motion_drive_steer(). */
 #define CAR_MISSION_PERIOD_MSEC       10u
 #define CAR_TELEMETRY_PERIOD_MSEC    200u
+#define CAR_FOLLOW_SPEED_MM_PER_SEC  150u   // TODO: raise once following works
+#define CAR_BARCODE_SPEED_MM_PER_SEC 100u   // Slower so every bar is sampled
+/* Terrain speeds. Climbing wants more torque or the car stalls on the
+ * face of the hump; descending wants less or it runs away and lands hard.
+ * The climb figure is really a torque knob: duty is speed * 1000 /
+ * MOTION_MAX_SPEED_MM_PER_SEC, so the old 300 asked for 187 per mille,
+ * barely over the MOTOR_MIN_DUTY floor, and the car stopped on the face
+ * of the hump. 600 asks for 375 and actually pulls up it.
+ * NOTE: MOTOR_MIN_DUTY floors every speed at about 240 mm/s, so the
+ * descend figure cannot be reached until that is measured and lowered. */
+#define CAR_CLIMB_SPEED_MM_PER_SEC   600u   // Was 300u, stalled on the climb
+#define CAR_DESCEND_SPEED_MM_PER_SEC 120u   // TODO: tune, floored for now
+#define CAR_STEER_KP_PERMILLE        350    // TODO: tune, per unit of error
+#define CAR_STEER_KD_PERMILLE        150    // TODO: tune, per unit error change
+#define CAR_STEER_LOST_PERMILLE      900    // Applied toward the last seen side
+#define CAR_LINE_SEEN_SAMPLES         20u   // Seen this long before speeding up
+#define CAR_LINE_LOST_STRAIGHT_MM    200u   // Gap plus barcode plus margin
+#define CAR_LINE_LOST_LIMIT_MM       600u   // Beyond this, search for the line
+/* Set from the build, not here: ./flash.sh --no-recover, or
+ * make NO_RECOVER=1, defines it to 1. The car then never enters
+ * RECOVER_LINE. With no line sensors fitted the search has nothing to
+ * find and ends in HALTED, so holding course is what lets the rest of the
+ * mission, humps included, be driven at all. */
+#ifndef CAR_SKIP_LINE_RECOVERY
+#define CAR_SKIP_LINE_RECOVERY         0
+#endif
+
+/* An obstacle that is still there after CAR_MAX_DETOUR_ATTEMPTS trips round
+ * it is not one this car can drive round, so it reverses instead. Attempts
+ * reset after CAR_DETOUR_CLEAR_MM of following with nothing in the way,
+ * which is the only evidence the obstacle is really behind us. */
+#define CAR_MAX_DETOUR_ATTEMPTS        4u   // Two probes each side
+/* A collision outranks everything. The car cannot tell where it was hit,
+ * so it stops dead, backs straight off far enough to give the scan room
+ * to work, and then looks before moving again. Repeated hits mean
+ * something is wrong that backing off will not fix. */
+#define CAR_COLLISION_BACKOFF_MM     150u   // Further than SCAN_REVERSE_MM
+#define CAR_COLLISION_SETTLE_MSEC    400u   // Let the chassis stop ringing
+#define CAR_MAX_COLLISIONS             3u   // Then stop for good
+#define CAR_DETOUR_CLEAR_MM          400u   // Clear run that ends a detour
+/* Leg index past which the obstacle is behind the car, so seeing the line
+ * again means the detour worked. Legs 0 to 3 are the turn out, the step
+ * sideways, the turn back and the drive past, and the line crossed during
+ * those is the one the car just left. */
+#define CAR_DETOUR_PAST_INDEX          4u
+
+#define CAR_TURN_SEARCH_MM           400u   // Look for a junction this far
+#define CAR_SONAR_CHECK_PERIOD_MSEC   60u   // Forward ping while following
+#define CAR_UTURN_DEG                180u
 
 /* Logging threshold, matches car_log_level_t: 0 error, 1 info, 2 debug. */
 #define CAR_LOG_LEVEL                  1
@@ -145,4 +391,3 @@
 #endif /* CAR_CONFIG_H */
 
 /*** end of file ***/
-

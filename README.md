@@ -11,105 +11,94 @@ one per person.
 [sirfonzie/mtk3smp-rp2040](https://github.com/sirfonzie/mtk3smp-rp2040)
 under its own licences (see `firmware/LICENSE` and `firmware/LICENSES/`).
 Everything of ours lives in `firmware/app_program/`. Do not edit the kernel
-tree except the three places listed under Kernel notes.
+tree except the places listed under Kernel notes.
 
 | Path                                | Owns                                   |
 |-------------------------------------|----------------------------------------|
 | `app_program/car_main.c`            | `usermain()`, the tasks, mission state |
-| `app_program/common/`               | shared types, every config knob, loggin|
-| `app_program/comms/`                | WiFi, MQTT, telemetry, heartbeat       |
-| `app_program/motion/`               | motors, encoders, PID, distance, turns |
-| `app_program/line_barcode/`         | three IR sensors, position, barcodes   |
-| `app_program/imu_terrain/`          | LSM303DLHC, tilt, humps, events        |
-| `app_program/scanning/`             | servo, HC-SR04, profiling, avoidance   |
+| `app_program/common/`               | shared types, every config knob, logging, board helpers |
+| `app_program/comms/`                | MQTT telemetry, heartbeat, commands    |
+| `app_program/motion/`               | motors, encoders, PID, distance, turns, steering |
+| `app_program/line_barcode/`         | three IR sensors, position, Code 39 barcodes |
+| `app_program/imu_terrain/`          | LSM303DLHC, tilt, humps, events, collision |
+| `app_program/scanning/`             | servo, HC-SR04, profiling, avoidance, recovery |
 | `build_make/mtkernel_3/app_program/`| `subdir.mk`, how our code is built     |
+| `flash.sh`                          | build one image and flash it, in one step |
+| `lib/libnet/lwip/lwip_utk_mqtt.*`   | the MQTT phase on the kernel's radio task |
 
-Each subsystem folder holds its public header under `include/`, the stubs,
-a host test, a hardware bench and a README with its calibration table.
+Each subsystem folder holds its public header under `include/`, the
+implementation, a host test, a hardware bench and a README with its
+calibration table.
 
 ## Who edits what
 
 | Owner   | Files                                                     |
 |---------|-----------------------------------------------------------|
-| Buddy 1 | `app_program/comms/`, plus the `COMMS_*` config block      |
+| Buddy 1 | `app_program/comms/`, `lib/libnet/lwip/lwip_utk_mqtt.*`, plus the `COMMS_*` config block |
 | Buddy 2 | `app_program/motion/`, plus `MOTOR_*`, `ENCODER_*`, `MOTION_*` |
-| Buddy 3 | `app_program/line_barcode/`, plus `LINE_*`, `TRACK_*`     |
+| Buddy 3 | `app_program/line_barcode/`, plus `LINE_*`, `TRACK_*`, `BARCODE_*` |
 | Buddy 4 | `app_program/imu_terrain/`, plus `IMU_*`                  |
 | Buddy 5 | `app_program/scanning/`, plus `SONAR_*`, `SERVO_*`, `SCAN_*` |
-| Team    | `car_main.c`, `car_types.h`, `car_log.h`, `CAR_*`, `subdir.mk` |
+| Team    | `car_main.c`, `common/`, `CAR_*`, `subdir.mk`             |
 | Nobody  | Everything else under `firmware/`. That is the kernel     |
 
-Each buddy owns all five files in their folder: the header, the stub, the
-test, the bench and the README. The kernel tree has exactly three edits,
-listed under Kernel notes; leave the rest alone.
+Every file you own says so in its header comment. The header changes only
+by agreement; the test grows and never shrinks; the bench is yours to
+extend; the README table is where your measurements go.
 
-Every file you own says so in its header comment. In your folder, `<name>.c`
-is where the work is; the header changes only by agreement; the test grows
-and never shrinks; the bench is yours to extend; the README table is where
-your measurements go.
+## Where the code stands
 
-## Every file and its status
+Every subsystem is implemented and every host test passes, including the
+decode of a synthetic Code 39 symbol in both directions, a 20 degree hump
+climb with its height integral, the obstacle planner on injected ranges,
+and the command parser. None of it has run on the car yet. The `TODO:`
+comments from the scaffold were left in place above each implementation
+so the original intent can be read against what was written; strip them
+before submission if the coding standard reviewer would count them.
 
-Three words are used below. **Finished** means there is nothing to write.
-**Stub** means the signature, doc comment and input guards are real but the
-algorithm returns `CAR_ERR_NOT_IMPLEMENTED` with a `TODO` naming what to
-write. **Skeleton** means the structure runs but the decisions are `TODO`.
+What each module does today, and the one thing to confirm first on it:
 
-### Top level of `firmware/`
+- **motion** drives the board's H-bridge over PWM and steers with
+  `motion_drive_steer()`. `MOTION_OPEN_LOOP` is 1 because the encoders are
+  not wired, so moves and turns are timed from the speed setpoint. Set it
+  to 0 when the encoder leads are on Grove 2 and 7. First check: the motor
+  test buttons, then wheel direction.
+- **line_barcode** reads the three MH-Sensor-Series modules on Grove 5, 6
+  and 1 as a 3 bit mask, and decodes Code 39 from the centre sensor with
+  the microsecond timer. First check: `LINE_SENSOR_DARK_LEVEL`.
+- **imu_terrain** runs the LSM303DLHC on Grove 3, moving the kernel's I2C
+  unit off the motor pins at init. Pitch is relative to a level reference
+  taken at boot. First check: `IMU_PITCH_SIGN`, nose up must read positive.
+- **scanning** runs the HC-SR04 at 3.3 V from Grove 4, with no echo
+  divider, and the servo on S1. First check: which way angles above 90
+  look; the header assumes left.
+- **comms** publishes JSON over MQTT through a new phase on the kernel's
+  radio task, only in the `WIFI_MQTT=1` build. Without it the controller
+  logs the radio as absent and drives anyway.
+- **car_main** calibrates before starting tasks, then follows the line with
+  a proportional plus derivative law, slows through the barcode gap, turns
+  at the next junction after a command, drives a box detour around an
+  obstacle, and searches back to the line afterwards.
 
-- `run_host_tests.sh`, finished. Compiles and runs the five host tests
-  with `-std=c99 -Wall -Wextra -Wconversion -DCAR_HOST_TEST`. Exit status
-  is the number of failing subsystems, so 0 means all green.
-- `ABBREVIATIONS.md`, finished. The abbreviation table the coding standard
-  requires. Add to it before using a new one in code.
-- `build_make/mtkernel_3/app_program/subdir.mk`, finished. Globs our
-  sources, excludes benches and tests, adds our include paths and
-  warnings, and implements `BENCH=`.
-- Everything else under `firmware/` is the kernel. Its own README is at
-  `docs/README_PORT.md`.
+The obstacle ping is shared by every state, not just line following. One
+ranging per `CAR_SONAR_CHECK_PERIOD_MSEC` is taken above the state switch
+and every state reads the same answer, so a turn, a detour leg and the
+recovery search all give way to something in the path. The two exceptions
+are the scan phase of avoidance, which is about to sweep the whole arc
+anyway, and `HALTED`, which is not going anywhere.
 
-### `app_program/common/`
+The detour deliberately leaves the line, which the brief allows, and every
+way out of it ends in `RECOVER_LINE`, which the brief requires. It ends
+early if the line reappears after `CAR_DETOUR_PAST_INDEX`, and a leg that
+pings blocked is abandoned mid-drive and replanned. `CAR_MAX_DETOUR_ATTEMPTS`
+bounds how many times the car will try to go round the same obstacle before
+reversing instead; the count clears only after `CAR_DETOUR_CLEAR_MM` of
+following with nothing ahead, so going round, finding the line and meeting
+the same obstacle again does not buy a fresh budget.
 
-- `car_types.h`, finished. The contract every subsystem shares: status
-  codes, navigation commands, motion events, avoidance actions, mission
-  states, and the hump, obstacle and telemetry structs. Change it only by
-  agreement, since every module and every test depends on it.
-- `car_config.h`, finished as a file. Motor and servo pins are verified
-  from the board maker's examples; every other value is a guess marked
-  `TODO: confirm` or `TODO: tune`. Also holds the two design switches
-  `LINE_SENSOR_IS_ANALOG` and `IMU_TURN_RATE_FROM_ENCODERS`.
-- `car_log.h`, finished. `CAR_LOG(level, fmt, ...)` gated by
-  `CAR_LOG_LEVEL`, routed to the kernel console, or to `printf` under
-  `CAR_HOST_TEST`. A macro because the kernel's `tm_printf` has no va_list
-  entry to forward to; the header says so.
-
-### Each subsystem folder
-
-The same five files live in `comms/`, `motion/`, `line_barcode/`,
-`imu_terrain/` and `scanning/`:
-
-- `include/<name>.h`, finished. The public API with units, contracts and
-  the hardware warnings. The only header other modules may include. A
-  changed signature means updating the test, the bench and `car_main.c`.
-- `<name>.c`, stub. NULL and range guards are real. `comms_is_connected()`
-  and `motion_is_busy()` return real flags. `motion_get_encoder_counts()`
-  reads the volatile counters. Every algorithm is a `TODO` naming the
-  kernel BSP or device call to use.
-- `test_<name>.c`, finished. One `assert` per guarantee. Fails today at
-  the first stub. This is the definition of done: make it pass without
-  deleting asserts.
-- `bench_<name>.c`, finished as a fixture. A `usermain()` for a spare Pico
-  with only that hardware wired. Calls the public API only and prints
-  readings for calibration. Prints zeros until the module is implemented.
-- `README.md`, finished. What the module owns, what done means for it, and
-  an empty calibration table to fill from the bench.
-
-### `app_program/car_main.c`
-
-Skeleton. Real: the mutex, subsystem init, five tasks (motion, IMU, line,
-mission, comms) each pacing itself with `tk_dly_tsk()`, the telemetry
-snapshot under the mutex, halt on any init failure, and the `switch` over
-mission state. `TODO`: the transition inside each state.
+Two things the code assumes that the course write-up should settle: the
+Code 39 characters that carry each command (`BARCODE_CHAR_*`), and whether
+a turn command means "at the next junction" (as implemented) or "now".
 
 ## Build
 
@@ -119,31 +108,79 @@ The VS Code Pico extension installs the SDK under `~/.pico-sdk/sdk/`.
 
     export PICO_SDK_PATH=~/.pico-sdk/sdk/2.3.0
     cd firmware/build_make
-    make CONSOLE=usb_cdc -j8                 # the car
+    make CONSOLE=usb_cdc -j8                 # the car, no radio
     make CONSOLE=usb_cdc BENCH=motion -j8    # one bench
 
-Output is `firmware/build_make/mtk3pico_smp0_usb_cdc.uf2` either way, so
-the last build wins. Flash straight after building. `make clean` between a
-car build and a bench build is not needed; the object lists differ.
+`firmware/flash.sh` wraps both of these and the flashing step; see Flash
+below. It is the shorter path for everyday work.
 
-For WiFi, copy `firmware/config/wifi_credentials.example.h` to
-`wifi_credentials.h`, fill it in (git ignores it), and add
-`WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1` to the make line. MQTT
-also needs `WIFI_TCP=1` and the profiles it requires.
+With the radio and MQTT, copy `firmware/config/wifi_credentials.example.h`
+to `wifi_credentials.h`, fill it in (git ignores it), set
+`COMMS_MQTT_BROKER_HOST` in `car_config.h`, and build:
+
+    make CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 \
+         WIFI_MQTT=1 -j8
+
+`WIFI_MQTT` sits on DHCP alone; it does not pull in the port's DNS, UDP and
+TCP echo qualification phases, so no echo server config files are needed.
+The image name gains a `_mqtt` suffix. Changing any profile flag triggers a
+full rebuild, by the port's design.
+
+Switching between the car and a bench relinks by itself. Make only
+compares timestamps and a switch touches no source, so `subdir.mk` keeps a
+stamp under `build_make/mtkernel_3/app_program/` recording which selection
+the image was linked from and removes the image when it changes. Without
+that, `make` after `make BENCH=motion` would report nothing to do and the
+bench would get flashed as the car.
 
 ## Flash
 
-With the button: hold BOOTSEL while plugging in USB, a volume `RPI-RP2`
-appears, copy the `.uf2` onto it and the board reboots into it.
+Every profile links to the same file name, so a bench built after the car
+replaces it on disk. Build and flash in one step and that cannot bite you:
+
+    cd firmware
+    ./flash.sh                  # the whole car
+    ./flash.sh motion           # the motion bench
+    ./flash.sh line_barcode     # and so on for each subsystem
+    ./flash.sh --wifi           # the car with the radio and MQTT
+    ./flash.sh --no-recover     # the car, but it never searches for the line
+    ./flash.sh --wifi comms     # the comms bench, which needs the radio
+    ./flash.sh servo            # servo only, straight at the PWM block
+    ./flash.sh --build-only motion
+
+It builds first and refuses to flash if the build failed, so the image on
+the board is always the one you just asked for. Needs `picotool`, which
+installs with `brew install picotool`.
+
+`--no-recover` defines `CAR_SKIP_LINE_RECOVERY`, which redirects every
+route into `RECOVER_LINE` back to `FOLLOW_LINE` and makes a lost line hold
+course instead of giving up. With the IR modules off the car the search
+finds nothing and ends in `HALTED` within a metre, which is why the hump
+and obstacle behaviour cannot otherwise be driven. It is a car option and
+refuses to combine with a bench. Switching it on or off rebuilds every
+`app_program` object, because it changes a define and no source file.
+
+**The first flash of a Pico needs the BOOTSEL button.** Hold it down while
+plugging in the USB cable, then run the script. From then on `picotool`
+reboots the board into the loader itself and the button is never needed
+again, because every profile here carries the USB console.
+
+To flash by hand instead, hold BOOTSEL while plugging in, wait for the
+`RPI-RP2` volume, and copy the image onto it:
 
     cp firmware/build_make/mtk3pico_smp0_usb_cdc.uf2 /Volumes/RPI-RP2/
 
-Without the button, once a Pico is running any USB console build:
+Or, on a board already running any build from this tree:
 
     picotool load -f -x firmware/build_make/mtk3pico_smp0_usb_cdc.uf2
 
-`-f` reboots the running Pico into BOOTSEL and `-x` runs the program after
-loading.
+`-f` reboots the running board into the loader and `-x` starts the program
+after loading.
+
+WARNING: iCloud sometimes leaves conflict copies beside the build output,
+named `mtk3pico_smp0_usb_cdc 2.uf2` and so on. They are stale images from
+whenever the conflict happened. Never drag one of those onto `RPI-RP2`;
+deleting them is safe, since the build recreates what it needs.
 
 ## Serial output
 
@@ -153,112 +190,490 @@ loading.
 Every bench waits 2 seconds before its first line, long enough to attach.
 The car prints at boot, and USB serial drops anything sent before a
 terminal connects, so open `screen` first and press the board's RESET
-button to see its startup lines.
+button to see its startup lines. The car logs every state change as
+`state A -> B`, using these numbers:
 
-## Smoke test with nothing wired
+| N | State | What it does | How it leaves |
+|---|---|---|---|
+| 0 | INIT | Nothing; calibration already ran before any task existed | Straight to 1 |
+| 1 | FOLLOW_LINE | The PD steering law, speed adapted for terrain | 4 obstacle, 2 barcode, 5 line lost, 7 hit |
+| 2 | DECODE_BARCODE | One tick: take the command, record it | 3 for a turn, 1 for straight |
+| 3 | EXECUTE_TURN | Follows to the next junction, then turns once | 1 when the turn finishes, 4 if blocked first |
+| 4 | AVOID_OBSTACLE | Scans, decides, drives the box, probes both sides | 1 if clear, 5 after a bypass, 6 if no lane |
+| 5 | RECOVER_LINE | Search pattern, one step per tick | 1 when reacquired, 6 when exhausted |
+| 6 | HALTED | `motion_stop()` every tick | Never; power cycle |
+| 7 | COLLISION | Stops dead, settles, backs off, hands to 4 | 4 after backing off, 6 after three hits |
 
-Do this first on every Pico. It proves the toolchain, flashing and serial
-work before any wiring exists. It is safe: every `*_init` is a stub, so no
-GPIO is configured or driven. Expected output today:
+Two halts arrive with no `state ->` line, because they set the state
+directly from outside the machine: `subsystem init failed, halting` at
+bring up, and `encoder stalled, halting` from the motion task.
 
-- car: `car firmware starting`, then `subsystem init failed, halting`,
-  then silence. State is HALTED and the tasks keep running.
-- `BENCH=motion`: the header, `motion_init failed`, then silence.
-- `BENCH=comms`: the header, `comms_init failed`, then `connected 0` once
-  a second.
-- `BENCH=line_barcode`: the header, `line_init failed`, then
-  `mask 000 error 0 junction 0` every 100 ms.
-- `BENCH=imu_terrain`: the header, `imu init or calibrate failed`, then
-  `pitch 0 heading 0 event 0 hump 0` every 100 ms.
-- `BENCH=scanning`: the header, `scan_init failed`, then
-  `angle 0 range 4000 status 5` through `angle 180`, one every 60 ms,
-  repeating each second.
+## Benches
 
-Status numbers printed by the benches follow `car_status_t`:
+Two layers, easy to confuse. `firmware/run_host_tests.sh` needs no board:
+it compiles each module for the Mac with fake hardware underneath and
+checks the maths and the contracts. Run it after any edit. A bench needs
+exactly one subsystem's hardware, and ignores anything else that happens
+to be plugged in.
 
-| Value | Status                    |
-|-------|---------------------------|
-| 0     | `CAR_OK`                  |
-| 1     | `CAR_ERR_TIMEOUT`         |
-| 2     | `CAR_ERR_RANGE`           |
-| 3     | `CAR_ERR_HARDWARE`        |
-| 4     | `CAR_ERR_NO_DATA`         |
-| 5     | `CAR_ERR_NOT_IMPLEMENTED` |
+Every bench is built and flashed the same way, and the build always
+happens first because every profile links to the same `.uf2` name:
 
-## One subsystem at a time
+```sh
+cd firmware
+./flash.sh <bench>          # build it and flash it
+./flash.sh <bench> --build-only
+screen $(ls /dev/cu.usbmodem* | head -1) 115200
+```
 
-The loop for each person: implement the `.c`, run
-`firmware/run_host_tests.sh` until your line says PASS, build your bench,
-flash it to your own Pico on your own Robo Pico with only your hardware
-wired, and fill in your README table from what it prints.
+| Bench | Hardware | Power | Status |
+|---|---|---|---|
+| `run_host_tests.sh` | none | none | passing |
+| car, nothing wired | Pico alone | USB | passing |
+| `motion` | 2 motors on M1, M2 | battery | drives, turns accurate |
+| `servo` | servo on S1 | battery | proven |
+| `scanning` | servo on S1, HC-SR04 on Grove 4 | battery | proven |
+| `detour` | 2 motors, servo, HC-SR04 | battery | proven; probe path untested |
+| `imu_terrain` | GY-511 on Grove 3 | USB | pitch proven |
+| `comms` | Pico W radio, a broker | USB | proven end to end |
+| `line_barcode` | 3 IR modules | USB | **on hold** |
 
-**`BENCH=motion`.** Wheels off the ground for the first run. Motors go to
-the M1 and M2 screw terminals, and the board must run from the battery,
-since USB power alone sags under motor load. Encoders on GP6 and GP7.
-Prints the pulse counts for a 500 mm move, which sets
-`WHEEL_CIRCUMFERENCE_MM` and exposes a left to right duty mismatch.
+The motion, servo, scanning and detour benches need the battery. Both the
+motor rail and the servo header run from it, and USB alone sags and
+resets the board however healthy the console output looks.
 
-**`BENCH=line_barcode`.** Sensors on GP26, GP27 and GP28, which are the
-ADC pins, so either sensor type fits. Power the LM393 modules from 3V3 so
-their output is 3.3 V. Slide the car across the line by hand: the mask
-should walk 001, 011, 010, 110, 100 and the error should change sign at
-the centre.
+### Per buddy, every command
 
-**`BENCH=imu_terrain`.** The LSM303DLHC is a 3.3 V part on the I2C0 Grove
-port, GP4 and GP5. Tilt by hand and pitch should follow. Then mount it,
-run the motors with the car held still, and note how far heading moves.
-That is the motor disturbance the header warns about.
+Run all of these from `firmware/`. `./flash.sh` builds first and refuses
+to flash a failed build. Watch any of them with
+`screen $(ls /dev/cu.usbmodem* | head -1) 115200`, quit with Ctrl-A K Y.
 
-**`BENCH=scanning`.** The HC-SR04 runs on 5 V and its Echo output is 5 V.
-Divide it down, for example 1k over 2k, before GP17. Trigger on GP16 can
-go direct. Servo on header S1, which the board powers from the motor rail,
-so again the battery. Put a box at a known distance and bearing and check
-the printed range and the angle it appears at.
+| Buddy | Commands |
+|---|---|
+| all | `./run_host_tests.sh` before every push |
+| 1 comms | `./flash.sh --wifi comms`, then `mosquitto_sub -h <broker> -t 'car/#' -v` and `mosquitto_pub -h <broker> -t car/command -m L` |
+| 2 motion | `./flash.sh motion` |
+| 3 line_barcode | `./flash.sh line_barcode` |
+| 4 imu_terrain | `./flash.sh imu_terrain`, and again with `BENCH_DRIVE` 1 in `bench_imu_terrain.c` for hump height |
+| 5 scanning | `./flash.sh servo`, `./flash.sh scanning`, `./flash.sh detour` |
+| team | `./flash.sh`, `./flash.sh --wifi` for the radio build, `./flash.sh --no-recover` to drive with no line sensors fitted |
 
-**`BENCH=comms`.** Needs a Pico W, the WiFi make flags above, a filled in
-`wifi_credentials.h`, and an MQTT broker on the same network (`mosquitto`
-on a laptop is enough). Set `COMMS_MQTT_BROKER_HOST` in `car_config.h`.
+Add `--build-only` to any of them to build without flashing, for example
+`./flash.sh --build-only motion`. Two benches have a flag to flip in the
+source first: `BENCH_DRIVE` in `bench_imu_terrain.c` and
+`BENCH_FIND_CENTRE` in `bench_servo.c`.
 
-## Host tests once kernel calls appear
+### `motion`
 
-The moment a `.c` includes `<tk/tkernel.h>` or `<bsp/libbsp.h>` it stops
-compiling on the host. Keep every kernel and BSP call inside a few small
-`static` functions at the bottom of the file, wrap only those in
-`#ifndef CAR_HOST_TEST` with a trivial fake in the `#else`, and the host
-script's `-DCAR_HOST_TEST` does the rest. The algorithm above them stays
-plain C and stays testable. PID maths, the barcode state machine and the
-hump estimator are what is worth testing on the host anyway.
+Wheels off the ground for the first run. It drives each motor in its own
+phase, so a wheel that turns in one phase and not the other isolates the
+fault to that motor, its screw terminal or that channel of the board; the
+board's own M1A and M2A buttons settle which. It then prints
+`encoders seen: left N right N`.
 
-## The full car
+The encoder half only runs when `MOTION_OPEN_LOOP` is 0. Until then it
+says so and skips to the drive. An encoder that never pulses is treated as
+absent rather than broken, so the car drives open loop on that wheel
+instead of refusing to move; only a wheel that pulsed and then went quiet
+while still commanded is a fault.
 
-All five wired, build without `BENCH`. Any failed init halts before the
-wheels move, so a partially built car halts. For incremental integration,
-treat `CAR_ERR_NOT_IMPLEMENTED` from an init as absent and continue, and
-only `CAR_ERR_HARDWARE` as fatal. That change lives in `usermain()` and is
-about four lines.
+Use this bench to calibrate distance. Command a straight leg, measure what
+it actually travelled with a tape, and scale `MOTION_MAX_SPEED_MM_PER_SEC`
+by actual over commanded. Nothing is counted in open loop, so that one
+constant scales every distance and every turn in the whole car. The motion
+README has the procedure.
+
+### `servo`
+
+Reach for this when the horn does not move. It talks straight to the PWM
+block through `car_hw` and never calls `scanning.c`, so it takes all of
+our scanning code out of the question. Three phases: centre held four
+seconds, a one degree sweep across the band and back, then signal off for
+two seconds, which usually makes a servo that was holding go slack.
+
+Tape a pointer to the horn first. On this car the horn points straight
+ahead at 1744 us, so the band runs 1469 to 2019 us for 65 to 115 degrees.
+
+A horn that swings a long way once at startup and then barely moves is not
+a bug. A servo reports nothing about where it is, so the first pulse
+throws it from wherever it was left to the commanded centre, and how far
+it travels is just the gap between the two. Set `BENCH_FIND_CENTRE` to 1
+at the top of `bench_servo.c`, run it with the horn clear, and it walks
+the pulse across a wide range printing each step so the right value can be
+read off into `SERVO_CENTRE_PULSE_USEC`.
+
+If the horn moves here but not in `scanning`, the fault is in
+`scanning.c`. If it moves in neither, work down this list: the battery is
+not connected or the board is off; the three pin lead is on the wrong
+header or reversed; the horn is jammed against its mount; or the servo is
+dead, which a spare settles in a minute.
+
+### `scanning`
+
+Servo first, sonar second, so the two faults cannot be confused. It parks
+the horn at each end and the centre with a second between moves and takes
+one reading at each, then pings ten times without moving and counts the
+echoes. A horn that moves with zero echoes is a sonar problem. No movement
+and no echoes usually means the battery.
+
+The HC-SR04 runs from the Grove port's 3.3 V with no divider, which costs
+maximum range but keeps the echo pin safe. This is the bench that measures
+what that range actually is.
+
+### `detour`
+
+Drives straight and goes round whatever it meets, with no line sensors
+involved at all. This is the bench for "does the box detour actually
+detour". It stops when something comes inside `SCAN_OBSTACLE_RANGE_MM`,
+prints what each of the three scan angles sees, prints the decision, then
+drives the box announcing each leg.
+
+```
+obstacle at 180 mm, stopping to look
+   65 deg    812 mm  clear
+   90 deg    180 mm  blocked
+  115 deg    790 mm  clear
+profile: valid 1 bearing 0 closest 180 width 61, clear left 790 right 812
+decision: go RIGHT (action 3)
+  leg 1/7  turn away 45 deg right
+```
+
+Leg lengths come from `CAR_WIDTH_MM` and `CAR_LENGTH_MM`, which are the
+car measured with a ruler, currently 150 and 200. The sideways leg moves
+half the obstacle plus half the car plus 50 mm of slack, divided by sin 45
+for the diagonal; the forward leg is the obstacle's width plus the whole
+car's length, because the back wheels are still beside the obstacle when
+the bumper is past it. A 100 mm obstacle gives side 247 and depth 425.
+`SCAN_CLEARANCE_MIN_MM` is `CAR_WIDTH_MM` plus 100, so a lane under 250 mm
+does not count as one; if the car now reverses where it used to squeeze
+through, that is this number and not a fault.
+
+Those three range lines are the whole story when a decision looks wrong:
+the planner never sees anything else. If it always reverses, both side
+readings are coming back under `SCAN_CLEARANCE_MIN_MM`, and the printed
+numbers say whether that is a wide obstacle or the sonar catching the
+floor.
+
+If a driving leg pings blocked part way round, the lane is a dead end
+too. The bench undoes the legs already driven, newest first, which puts
+the car back where the detour started, then tries the other side:
+
+```
+  leg 4/7 blocked at 140 mm, backing out
+  backing out 3 leg(s)
+  undo 3/3  turn back parallel
+  undo 2/3  step sideways
+  undo 1/3  turn away
+back at the start, trying right
+```
+
+Undoing means turning the same amount the other way and driving the same
+distance in reverse, so it is only as accurate as the open loop odometry.
+Expect drift over several probes, and note that `CAR_MAX_DETOUR_ATTEMPTS`
+caps the shuffling at four tries before it gives up.
+
+Nothing brings the car back to anything here, so after a detour it drives
+off in whatever direction the box left it pointing. Give it floor space.
+
+### `imu_terrain`
+
+The `ok` and `mag` columns are the ones to read. An accelerometer measures
+apparent gravity and cannot tell a tilt from a push, so one running motor
+shakes an unbalanced chassis enough to swing pitch by several degrees on a
+perfectly level car.
+
+Pitch is therefore frozen whenever the reading cannot be believed. `mag`
+is the filtered vector length in milli g, near 1000 when still. `ok` is 1
+while `mag` is within `IMU_PITCH_TRUST_BAND_MILLI_G` of one g, and pitch
+holds its last value whenever `ok` is 0. A motor running, `mag` swinging
+and `ok 0` is correct behaviour. `ok 0` with the car standing still means
+the mount transmits too much vibration, or the band is too tight.
+
+The bench prints one line carrying every item Buddy 4 owns, in order:
+
+```
+cal 1 | pitch 3 ok 1 mag 1004 raw 1012 | hump 0 peak 0 mm | event STILL |
+hit 0 | rate 0 dps | heading 187 | terrain STABLE rough 11
+```
+
+`cal` is sensor calibration, `pitch`/`ok`/`mag` are tilt and whether it
+can be believed, `raw` is the largest unfiltered magnitude since the last
+line and the only column a knock shows up in, `hump`/`peak` are detection
+and peak measurement,
+`event` is the motion class, `hit` is collision, `rate` is turn rate, and
+`terrain`/`rough` is the terrain summary. Roughness is the smoothed
+distance of the gravity vector from one g: near zero on a smooth floor
+because gravity is then the only force, climbing with every bump.
+
+**Collision:** the `hit` column, and `raw` is how you tune it. Hold the
+car still and tap the bumper harder and harder until `hit` goes to 1, then
+back off until it stops triggering. `IMU_COLLISION_THRESHOLD_MILLI_G` is
+600 over one g, so a knock has to reach `raw` 1600 to count; set it just
+above the hardest knock that should not.
+
+Watch `raw`, not `mag`. `mag` is the filtered vector, and the filter takes
+16 samples to respond, so a tap that peaks at 2500 for one sample barely
+moves it: that column simply cannot show you an impact. The collision test
+has always run on the raw sample, which is what `raw` reports. `hit` is
+latched and cleared when read, so it appears on exactly one printed line
+and is easy to scroll past.
+
+A sensor mounted high on the chassis feels a bumper tap through whatever
+it is bolted to. If `raw` barely lifts when you knock the bumper hard,
+the mount is absorbing the impact and the threshold is not the problem.
+
+**Hump height:** the `peak` column, and it needs the car driving. Height
+is the integral of sin(pitch) over ground distance, so with the car
+stationary it stays at zero however clearly the pitch moves. Set
+`BENCH_DRIVE` to 1 at the top of `bench_imu_terrain.c`, which makes the
+bench drive straight and feed the odometry in. Then:
+
+1. `BENCH_DRIVE` 0 first, on the desk. Tilt the car nose up by hand and
+   confirm pitch reads positive; that settles `IMU_PITCH_SIGN`.
+2. Still static, tilt to roughly the angle of your real hump and check
+   pitch passes `IMU_HUMP_PITCH_THRESHOLD_DEG`, which is 5 degrees.
+3. `BENCH_DRIVE` 1, battery on, drive over the hump on the floor.
+4. Compare `peak` against a ruler on the hump. Scale
+   `IMU_PITCH_SIGN` or the threshold if the sign or the trigger is wrong.
+
+Watch `ok` during step 3. A car driving over a bump is accelerating, so
+the trust gate may freeze pitch exactly when the hump is under the wheels
+and leave `peak` at zero. If that happens, widen
+`IMU_PITCH_TRUST_BAND_MILLI_G` until pitch survives the climb, at the cost
+of letting some vibration through. That trade is the whole difficulty of
+doing this without a gyroscope. It is now 300, raised from 150 because a
+sensor mounted high on the chassis swings through a tight band on any
+floor: the higher the mount, the longer the lever arm on every vibration.
+
+The same gate is why the car may never switch to the climb speed. The
+event that `terrain_speed()` keys off is derived from pitch, and frozen
+pitch means a frozen event. The car logs `terrain speed N, event E,
+pitch ok K` whenever the commanded speed changes, so a run that never
+prints that line at all on a hump is the gate holding, not the hump being
+missed. `ok 0` for most of a drive says the band is still too tight.
+
+### `comms`
+
+Needs the radio profile: `./flash.sh --wifi comms`. It refuses without it.
+Proves the join, the MQTT connect and the command echo. Watch it from a
+second terminal:
+
+```sh
+mosquitto_sub -h <broker ip> -t 'car/#' -v
+mosquitto_pub -h <broker ip> -t car/command -m L
+```
+
+The broker's own `-v` log prints protocol lines and byte counts but never
+payloads, so use `mosquitto_sub` to see contents.
+
+### `line_barcode` (on hold)
+
+Held while the IR modules are off the car. When they go back on, `raw` is
+the electrical level on each pin before interpretation, `changes` counts
+every flip per sensor since boot, and `health` goes CAPITAL per sensor
+once it has been seen both dark and light.
+
+Wave a hand across one sensor at a time and watch `changes` climb: that
+proves the sensor is wired, powered and detecting. A counter stuck at zero
+means nothing is reaching the pin. Between them they tell a junction from
+a dead loom: `mask 111` with three CAPITALS is a real junction, `mask 111`
+with three lower case letters is three sensors that have never changed.
+`mask 000 health rcl` with nothing under the car is the normal resting
+state, not a fault.
+
+## Mission status
+
+The brief's requirements, against what has actually run on hardware. The
+course write-up PDF is not in the repo, so this tracks capability rather
+than quoting requirement numbers.
+
+**Collision failsafe**
+
+A hit outranks every state. `imu_is_collision_detected()` is checked
+above the state switch, before the sonar and before any state runs, so it
+can interrupt a detour leg, a turn or a search part way through a move.
+State 7 then stops dead, holds still for `CAR_COLLISION_SETTLE_MSEC` while
+the impact rings out of the accelerometer, backs straight off
+`CAR_COLLISION_BACKOFF_MM`, and hands over to avoidance to scan and
+decide. Three hits in one run and it halts for good.
+
+It backs off blind on purpose. The accelerometer says a hit happened and
+roughly how hard, but nothing says where: the sonar was pointing wherever
+it was pointing and the line sensors look at the floor. Straight back
+along the path just driven is the one direction known to have been clear
+a moment ago. Looking happens afterwards, from far enough away that the
+sonar's minimum range is not in the way.
+
+**Scanning while moving**
+
+`SCAN_SWEEP_WHILE_MOVING` is 1, so the coarse angles are swept while
+driving in the pattern centre, right, centre, left. Only a centre reading
+can trigger avoidance; the side readings are early warning that goes in
+the log, so the car knows which side is open before it has to choose.
+
+The cost is real and worth stating: forward is ranged on every other
+reading rather than every one, so an obstacle can be one reading closer
+before it is seen. Raise `SCAN_OBSTACLE_RANGE_MM`, drop the speed, or set
+the flag to 0 to stare straight ahead instead.
+
+**Terrain speed**
+
+`terrain_speed()` overrides the commanded speed from the motion event:
+`CAR_CLIMB_SPEED_MM_PER_SEC` while climbing, because the car stalls on
+the face of a hump at following speed, and `CAR_DESCEND_SPEED_MM_PER_SEC`
+while descending or while `imu_is_terrain_stable()` is false. The climb
+figure is 600 mm/s, raised from 300 because the car stopped on the face of
+the hump: speed maps straight to duty, so 300 asked for 187 per mille
+against a floor of 150 and there was no torque left to climb with. It keys off
+the motion event rather than the pitch angle, because pitch is frozen
+exactly when the accelerometer cannot be believed, which is exactly when
+a car is climbing a bump.
+
+**Working, seen on hardware**
+
+| Capability | Evidence |
+|---|---|
+| Both motors driven over PWM, forward, reverse, turn | motion and detour benches |
+| Distances and turn angles accurate | detour legs measured correct after calibration |
+| Servo pointing the sonar across the band | servo and scanning benches |
+| Obstacle side decision, left against right | detour bench picks the side with room |
+| Box detour round an obstacle | detour bench, full seven legs |
+| Ultrasonic ranging at 3.3 V | telemetry reported 519 mm, correctly not an obstacle |
+| Tilt from the IMU, with a vibration trust gate | imu_terrain bench |
+| WiFi join and MQTT connect | broker log, car connected as client `car` |
+| Telemetry and heartbeat published as JSON | both topics live on the broker |
+| Remote commands received and parsed | `car/command` subscribed, L/R/S/U parsed |
+| Mission state machine runs and reports state | telemetry `state` field tracked to 6 |
+
+**Needs further testing**
+
+| Capability | What is blocking it |
+|---|---|
+| Alternating left and right probe | new; the retrace leans entirely on open loop odometry |
+| Five angle fine scan | was three until now, so the extra two are untested |
+| Hump detection and peak height | set `BENCH_DRIVE` to 1 and drive over one |
+| Collision detection | threshold never triggered on hardware |
+| Barcode decode | on hold with the IR modules |
+| Line following and junction detection | on hold with the IR modules |
+| Line reacquisition after a bypass | code is in, needs the IR modules to prove |
+| Encoders, closed loop speed and counted distance | not fitted; `MOTION_OPEN_LOOP` stays 1 |
+
+**Known limits right now**
+
+`MOTOR_MIN_DUTY` floors every duty, which at the current top speed puts
+the slowest achievable speed at about 240 mm/s. Both
+`CAR_FOLLOW_SPEED_MM_PER_SEC` and `CAR_BARCODE_SPEED_MM_PER_SEC` are below
+that, so the car cannot yet go as slowly as the barcode decoder wants.
+Measure the lowest duty that starts the car from rest and lower it.
+
+
+## Bring up order
+
+Prove each thing before the next depends on it. Wheels off the ground
+until line following behaves.
+
+1. Board alone, nothing plugged in: `./flash.sh`, then watch the console
+   for the startup lines and `motion ready`, `line ready`. Missing sensors
+   log as absent rather than failing.
+2. Motors on the battery: press the board's M1A and M2A test buttons before
+   any code. Then `./flash.sh motion`, which drives each motor alone before
+   it drives both. Swap a terminal pair if a wheel runs backwards, and
+   confirm M1 is physically the left motor.
+3. `./flash.sh imu_terrain`: tilt nose up, pitch positive. Run the motors
+   held still and note the heading shift.
+4. `./flash.sh servo`: the horn must move. Everything below this step
+   depends on it, and nothing else can tell you it is broken.
+5. `./flash.sh scanning`: watch the horn move in phase 1, count echoes in
+   phase 2, then place a box at 300 mm for the sweep.
+6. `./flash.sh detour`: a box on the floor, off to one side. Check the
+   three printed ranges match where the box really is, that the decision
+   picks the side with more room, and that leg 1 is a recognisable 45
+   degrees rather than a spin.
+7. `./flash.sh --wifi comms`: `connected 1`, then publish to `car/command`
+   from a laptop and watch it echo.
+8. **On hold** until the IR modules go back on: `./flash.sh line_barcode`.
+   Wave each sensor over tape until all three health letters are CAPITAL,
+   then slide the car across so the mask walks 001, 011, 010, 110, 100.
+   Drive it over a printed barcode and watch for `barcode command`.
+9. The whole car on the floor. This needs step 8 first: without the line
+   sensors the car has nothing to follow and halts once the search gives
+   up.
 
 ## Pin map
 
-Verified pins come from the board maker's example code. Grove port numbers
-for the sensor pins are on the board's silkscreen; fill them in as wired.
+Verified pins come from the board maker's example code. Grove port
+numbers and pairs are from the board documentation.
 
-| Function                  | Pins            | Source                    |
-|---------------------------|-----------------|---------------------------|
-| Motor left M1A, M1B       | GP8, GP9        | verified, board terminal  |
-| Motor right M2A, M2B      | GP10, GP11      | verified, board terminal  |
-| Scan servo, header S1     | GP12            | verified                  |
-| Kernel console UART0      | GP0, GP1        | Grove 1, do not reuse     |
-| Encoder left, right       | GP6, GP7        | Grove port, confirm       |
-| I2C0 SDA, SCL to IMU      | GP4, GP5        | Grove port, confirm       |
-| Sonar trigger, echo       | GP16, GP17      | Grove port, confirm       |
-| IR left, centre, right    | GP26, GP27, GP28| Grove port, confirm, ADC  |
-| Board: NeoPixels          | GP18            | verified, leave alone     |
-| Board: buttons            | GP20, GP21      | verified, spare inputs    |
-| Board: buzzer             | GP22            | verified, leave alone     |
-| Pico W radio              | GP23 to 25, 29  | not available             |
+| Function                  | Pins            | Where                       |
+|---------------------------|-----------------|-----------------------------|
+| Motor left M1A, M1B       | GP8, GP9        | M1 terminal, verified       |
+| Motor right M2A, M2B      | GP10, GP11      | M2 terminal, verified       |
+| Scan servo                | GP12            | header S1, verified         |
+| Console mirror, UART0 TX  | GP0             | Grove 1 yellow, leave loose |
+| Line sensor right         | GP1             | Grove 1, white              |
+| Encoder left              | GP2             | Grove 2, yellow             |
+| I2C0 SDA, SCL to IMU      | GP4, GP5        | Grove 3                     |
+| Sonar trigger, echo       | GP16, GP17      | Grove 4                     |
+| Line sensor left          | GP6             | Grove 5, yellow             |
+| Line sensor centre        | GP26            | Grove 6, yellow             |
+| Encoder right             | GP7             | Grove 7, yellow             |
+| Board: NeoPixels          | GP18            | verified, leave alone       |
+| Board: buttons            | GP20, GP21      | verified, spare inputs      |
+| Board: buzzer             | GP22            | verified, leave alone       |
+| Pico W radio              | GP23 to 25, 29  | not available               |
 
-Spare after all of the above: GP2, GP3 (Maker port), GP13 to GP15 (servo
-headers S2 to S4), GP19.
+GP26 is shared between Grove 5 and Grove 6; only Grove 6 uses it. Which
+physical sensor is left, centre and right is set by where each module is
+mounted: swap the three `LINE_SENSOR_*_PIN` numbers to match. This layout
+uses one Grove cable per port, seven in all. If cables are short, both
+encoders fit on Grove 7 instead (left GP7 yellow, right GP28 white, with
+their supply and ground bridged) and Grove 2 goes back to the right line
+sensor on GP2; that is a three number change in `car_config.h`.
+
+## Reclaiming Grove 1 for a sensor
+
+Grove 1 carries UART0, the kernel's serial console. The console you
+actually read is USB, and UART0 only mirrors it, so the pins can be taken
+back. GP1 is UART receive, an input on the Pico's side, so a sensor output
+can sit on it from power on with nothing driving against it; `line_init()`
+then switches the pin to plain GPIO and the mirror loses its receive line,
+which nothing on the car uses. GP0 is UART transmit and is driven by the
+Pico from boot until `line_init()` runs, so it must never meet a sensor
+output. That is why the sensor goes on the **white** wire and the yellow
+end of that cable stays unconnected. The build refuses this pin layout
+under `CONSOLE=uart`, where the serial line is the only console.
+
+Wiring for this layout:
+
+| Cable   | Red      | Black     | Yellow             | White          |
+|---------|----------|-----------|--------------------|----------------|
+| Grove 1 | IR VCC   | IR GND    | nothing, tape it   | IR DO          |
+| Grove 2 | motor white, supply | motor blue, ground | motor red, A phase | nothing |
+| Grove 7 | motor white, supply | motor blue, ground | motor red, A phase | nothing |
+
+Test it in this order, wheels off the ground:
+
+1. Build and flash the line bench, `make CONSOLE=usb_cdc BENCH=line_barcode
+   -j8`. Open `screen` first, then press reset.
+2. Within two seconds you should see `line bench: analog 0`. That line is
+   printed after the sensor pins have been claimed, so seeing it proves the
+   USB console survived losing UART0's receive pin. If nothing appears, the
+   USB console never depended on Grove 1, so look at the serial port name
+   or the flash, not at this change.
+3. The bench prints `mask RCL` every 100 ms, right sensor first. Hold black
+   tape under the Grove 1 sensor only: the first digit must change and
+   `error` must read 2. If the digit changes the wrong way, flip
+   `LINE_SENSOR_DARK_LEVEL`.
+4. Do the same under the Grove 5 sensor, last digit and error -2, and the
+   Grove 6 sensor, middle digit and error 0. Every sensor now has a known
+   port.
+5. Build the car, flash, and confirm `motion ready` and `line ready` at
+   boot. From here the bring up order above applies.
+
+Leave `MOTION_OPEN_LOOP` at 1 until the encoders are physically wired.
+Only when they are, set it to 0 and rerun the motion bench: it reports
+`encoders seen: left 1 right 1`, and the 500 mm drive then measures rather
+than times itself.
 
 ## Kernel notes
 
@@ -267,19 +682,24 @@ headers S2 to S4), GP19.
   second core.
 - The tick is `CNF_TIMER_PERIOD` in `firmware/config/config.h`, 10 ms.
   Task delays round up to it.
+- The kernel releases only its own blocks from reset. `common/car_hw.c`
+  releases PWM and TIMER on first use and sets the timer tick to one
+  microsecond, idempotently, so the order the modules initialise in does
+  not matter.
 - Interrupts are registered with `tk_def_int()` and `EnableInt()`, never
-  by writing the vector table. Peripheral IRQs run on core 0.
+  by writing the vector table. The encoders share NVIC line 13.
 - A file that includes `<tk/tkernel.h>` must not include `<stddef.h>`,
   `<stdio.h>`, `<string.h>` or `<stdlib.h>`: the kernel typedefs its own
-  `size_t` and the two collide. Use the kernel's `NULL` and its `tstdlib`
-  string functions instead. `<stdint.h>` and `<stdbool.h>` are fine.
-- lwIP runs `NO_SYS=1`, so every call into the comms module must come from
-  the comms task. Its MQTT client is lwIP's `apps/mqtt`, already in the
-  Pico SDK's lwIP tree the port builds from.
-- Three edits were made to the vendored kernel, and are the only ones:
-  `build_make/pico_rp2040.mk` gained a `pico_util` include path in two
-  places, without which the WiFi profile does not build against SDK 2.3;
-  `build_make/mtkernel_3/lib/libtm/sysdepend/pico_rp2040/usb/.gitkeep`
-  exists because the USB console rule needs that directory and the port
-  never creates it on macOS make 3.81; and `app_program/subdir.mk` is
-  ours.
+  `size_t` and the two collide. Every module includes the kernel only
+  outside `CAR_HOST_TEST` and keeps its hardware calls in small static
+  functions at the bottom of the file with a host fake beside them.
+- lwIP runs `NO_SYS=1` on the radio task. The MQTT phase is the only lwIP
+  caller the car adds, and application tasks reach it through ring buffers.
+- Edits to the vendored kernel, and the only ones: `build_make/pico_rp2040.mk`
+  gained a `pico_util` include path in two places for SDK 2.3 and the
+  `WIFI_MQTT` profile; `build_make/mtkernel_3/lib/libtm/sysdepend/pico_rp2040/usb/.gitkeep`
+  exists because the USB console rule needs that directory on macOS make
+  3.81; `lib/libnet/lwip/include/lwipopts.h` enables TCP and sizes the
+  pools for MQTT; `lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c` polls
+  the MQTT phase once DHCP has an address; `lib/libnet/lwip/lwip_utk_mqtt.*`
+  is new; and `app_program/subdir.mk` is ours.

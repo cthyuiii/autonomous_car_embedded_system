@@ -6,6 +6,11 @@
  * milliseconds. Every function is non blocking. Call motion_tick() at a fixed
  * rate and poll motion_is_busy() to learn when a move has finished.
  *
+ * NOTE: With MOTION_OPEN_LOOP set in car_config.h, no encoder is read and
+ * every move is timed from the speed setpoint instead of counted. That is
+ * the state of the car until both encoders are wired. The API is the same
+ * either way; only the accuracy changes.
+ *
  * Owner: Buddy 2, motion control. A changed signature here also changes the
  * test, the bench and car_main.c, so agree it with the team first.
  */
@@ -22,9 +27,13 @@
 typedef struct
 {
     uint16_t speed_mm_per_sec;
+    int16_t  left_mm_per_sec;    /* Signed, negative in reverse */
+    int16_t  right_mm_per_sec;   /* Signed, negative in reverse */
     uint32_t distance_mm;
     uint32_t encoder_count_left;
     uint32_t encoder_count_right;
+    bool     b_left_encoder;     /* Has ever produced a pulse */
+    bool     b_right_encoder;    /* Has ever produced a pulse */
     bool     b_is_busy;
 } motion_state_t;
 
@@ -41,7 +50,13 @@ car_status_t motion_init (void);
  * NOTE: Timing jitter here shows up directly as speed ripple, so this must
  * be called from a timer or a tightly paced main loop, not ad hoc.
  *
- * @return CAR_OK, or CAR_ERR_HARDWARE if an encoder stopped counting.
+ * NOTE: A wheel that has never produced a single pulse is taken to have
+ * no encoder fitted, not a broken one, and is driven open loop without
+ * complaint. Only a wheel that pulsed and then stopped while still being
+ * commanded counts as a fault. That way a half wired car still moves and
+ * motion_get_state() says which encoders were actually found.
+ *
+ * @return CAR_OK, or CAR_ERR_HARDWARE if a working encoder stopped.
  */
 car_status_t motion_tick (void);
 
@@ -80,6 +95,21 @@ car_status_t motion_turn_left (uint16_t angle_deg);
  * @return CAR_OK if accepted, CAR_ERR_RANGE if the angle is above 360.
  */
 car_status_t motion_turn_right (uint16_t angle_deg);
+
+/**
+ * @brief Drive forward continuously at the set speed with a steering bias.
+ *
+ * This is the line following primitive. There is no distance target, so
+ * motion_is_busy() stays false; the drive continues until the next command
+ * or motion_stop(). Positive steers right by speeding the left wheel up and
+ * slowing the right wheel down by the same fraction of the set speed.
+ * Beyond 1000 per mille the inner wheel reverses, which pivots the car.
+ *
+ * @param[in] steer_permille Bias, clamped to MOTION_MAX_STEER_PERMILLE.
+ *
+ * @return CAR_OK.
+ */
+car_status_t motion_drive_steer (int16_t steer_permille);
 
 /**
  * @brief Set the target speed used by subsequent moves.
@@ -129,4 +159,3 @@ car_status_t motion_get_encoder_counts (uint32_t * p_left, uint32_t * p_right);
 #endif /* MOTION_H */
 
 /*** end of file ***/
-

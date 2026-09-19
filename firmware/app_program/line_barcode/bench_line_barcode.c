@@ -1,11 +1,23 @@
 /** @file bench_line_barcode.c
  *
- * @brief Streams the sensor mask and position error for calibration.
+ * @brief Streams the sensor mask, the health of each sensor, and the
+ *        position error, then prints any barcode it decodes.
  *
- * Build with `make BENCH=line_barcode` and flash to a Pico with the three
- * IR sensors attached. Slide the car across the line by hand: the mask
+ * Build with `make BENCH=line_barcode` and flash to a board with the three
+ * IR modules attached. Slide the car across the line by hand: the mask
  * should walk 001, 011, 010, 110, 100 and the error should change sign at
- * the centre. Any decoded barcode is printed as it completes.
+ * the centre.
+ *
+ * NOTE on health, which is the line to read first. A sensor only counts as
+ * working once it has been seen both dark and light, so waving the car over
+ * the line proves each one in turn. Until a sensor has shown both levels its
+ * health letter stays lower case, and nothing it reports means anything. An
+ * unplugged sensor sits at one level forever and never earns its capital.
+ *
+ * NOTE: mask 111 means all three read dark. With working sensors that is a
+ * junction. With a disconnected loom it is whatever the pin pull happens to
+ * be, which is why the health letters exist: three lower case letters and a
+ * steady 111 is a wiring fault, not a junction.
  *
  * Owner: Buddy 3, barcode decoding and IR line following. Extend it as you
  * need; nothing else depends on it.
@@ -21,13 +33,27 @@
 
 #define BENCH_STARTUP_MSEC 2000u
 #define BENCH_PRINT_EVERY    10u
+#define BENCH_LEFT_BIT     0x01u
+#define BENCH_CENTRE_BIT   0x02u
+#define BENCH_RIGHT_BIT    0x04u
+
+static uint8_t  g_last_raw   = 0u;
+static uint32_t g_changes[3] = { 0u, 0u, 0u };
+
+static char health_letter (uint8_t health, uint8_t bit, char letter);
 
 INT usermain (void)
 {
     uint32_t sample_count = 0u;
 
     (void)tk_dly_tsk(BENCH_STARTUP_MSEC);
-    CAR_LOG(CAR_LOG_INFO, "line bench: analog %u\n", LINE_SENSOR_IS_ANALOG);
+    CAR_LOG(CAR_LOG_INFO, "line bench: pins L%u C%u R%u, dark is %u\n",
+            LINE_SENSOR_LEFT_PIN, LINE_SENSOR_CENTRE_PIN,
+            LINE_SENSOR_RIGHT_PIN, LINE_SENSOR_DARK_LEVEL);
+    CAR_LOG(CAR_LOG_INFO,
+            "wave a hand or the line under each sensor in turn. changes "
+            "counts every level flip, right/centre/left, and the health "
+            "letter goes CAPITAL once that sensor has shown both levels\n");
 
     if (CAR_OK != line_init())
     {
@@ -38,10 +64,33 @@ INT usermain (void)
     {
         int16_t           error   = 0;
         uint8_t           mask    = 0u;
+        uint8_t           health  = 0u;
+        uint8_t           raw     = 0u;
         car_nav_command_t command = CAR_NAV_NONE;
 
         (void)line_get_position(&error);
         (void)line_get_sensor_mask(&mask);
+        (void)line_get_health(&health);
+        (void)line_get_raw_levels(&raw);
+
+        /* Count every level change per sensor. A sensor that is wired and
+         * pointed at something will tick this up as you move the car over
+         * it, whichever way round its output is. One that never ticks has
+         * no signal reaching the pin at all. */
+        if (raw != g_last_raw)
+        {
+            uint8_t bit = 0u;
+
+            for (bit = 0u; bit < 3u; bit++)
+            {
+                if (0u != (((uint8_t)(raw ^ g_last_raw) >> bit) & 1u))
+                {
+                    g_changes[bit]++;
+                }
+            }
+
+            g_last_raw = raw;
+        }
 
         if (CAR_OK == barcode_poll(&command))
         {
@@ -50,8 +99,17 @@ INT usermain (void)
 
         if (0u == (sample_count % BENCH_PRINT_EVERY))
         {
-            CAR_LOG(CAR_LOG_INFO, "mask %u%u%u error %d junction %d\n",
+            /* Mask printed right to left so it reads as the car sees the
+             * track: right sensor first, then centre, then left. */
+            CAR_LOG(CAR_LOG_INFO,
+                    "mask %u%u%u  raw %u%u%u  health %c%c%c  changes "
+                    "%u/%u/%u  error %d  junction %d\n",
                     (mask >> 2u) & 1u, (mask >> 1u) & 1u, mask & 1u,
+                    (raw >> 2u) & 1u, (raw >> 1u) & 1u, raw & 1u,
+                    health_letter(health, BENCH_RIGHT_BIT, 'r'),
+                    health_letter(health, BENCH_CENTRE_BIT, 'c'),
+                    health_letter(health, BENCH_LEFT_BIT, 'l'),
+                    g_changes[2], g_changes[1], g_changes[0],
                     error, line_is_at_junction());
         }
 
@@ -60,5 +118,25 @@ INT usermain (void)
     }
 }
 
-/*** end of file ***/
+/**
+ * @brief Upper case the letter once that sensor has proved itself.
+ *
+ * @param[in] health Working mask from line_get_health().
+ * @param[in] bit    Which sensor to test.
+ * @param[in] letter Lower case letter for that sensor.
+ *
+ * @return The letter, upper case if the sensor has shown both levels.
+ */
+static char health_letter (uint8_t health, uint8_t bit, char letter)
+{
+    char shown = letter;
 
+    if (0u != (health & bit))
+    {
+        shown = (char)(letter - ('a' - 'A'));
+    }
+
+    return shown;
+}
+
+/*** end of file ***/

@@ -143,6 +143,19 @@ $(error WIFI_TCPBULK=1 requires WIFI_TCP=1)
 endif
 endif
 
+# MQTT client on the DHCP netif: the car's telemetry and command link.  It
+# needs only an address, so it sits on WIFI_DHCP and skips the DNS, UDP and
+# TCP echo qualification phases entirely.  The broker is named by IP.
+WIFI_MQTT ?= 0
+ifneq ($(filter $(WIFI_MQTT),0 1),$(WIFI_MQTT))
+$(error Unknown WIFI_MQTT '$(WIFI_MQTT)'; use 0 or 1)
+endif
+ifeq ($(WIFI_MQTT),1)
+ifneq ($(WIFI_DHCP),1)
+$(error WIFI_MQTT=1 requires WIFI_DHCP=1)
+endif
+endif
+
 ifeq ($(WIFI_NETIF),1)
 ifneq ($(WIFI_JOIN),1)
 $(error WIFI_NETIF=1 requires WIFI_JOIN=1)
@@ -191,6 +204,9 @@ endif
 # a live hazard: an SMP=1 build was once flashed in place of an SMP=0 one and
 # only the banner in the log revealed it.
 #
+ifeq ($(WIFI_MQTT),1)
+WIFI_SUFFIX := $(WIFI_SUFFIX)_mqtt
+endif
 EXE_FILE := mtk3pico_smp$(SMP)_$(CONSOLE)$(WIFI_SUFFIX)
 
 GCC := arm-none-eabi-gcc
@@ -268,7 +284,7 @@ endif
 # before any recipe executes.
 ################################################################################
 
-PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)
+PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)-mqtt$(WIFI_MQTT)
 PROFILE_FILE := .build_profile
 
 ifneq ($(strip $(shell cat $(PROFILE_FILE) 2>/dev/null)),$(PROFILE_ID))
@@ -393,6 +409,9 @@ LWIP_SRCS := core/init.c core/def.c core/dns.c core/inet_chksum.c \
              core/ipv4/icmp.c core/ipv4/igmp.c core/ipv4/ip4_frag.c \
              core/ipv4/ip4.c core/ipv4/ip4_addr.c core/ipv4/acd.c \
              netif/ethernet.c
+ifeq ($(WIFI_MQTT),1)
+LWIP_SRCS += apps/mqtt/mqtt.c
+endif
 LWIP_OBJS := $(addprefix ./mtkernel_3/lwip/,$(LWIP_SRCS:.c=.o))
 LWIP_PORT_OBJS := ./mtkernel_3/lib/libnet/lwip/lwip_utk.o
 ifneq ($(filter 1,$(WIFI_STATIC) $(WIFI_DHCP)),)
@@ -406,6 +425,9 @@ LWIP_PORT_OBJS += ./mtkernel_3/lib/libnet/lwip/lwip_utk_tcp.o
 endif
 ifeq ($(WIFI_TCPBULK),1)
 LWIP_PORT_OBJS += ./mtkernel_3/lib/libnet/lwip/lwip_utk_tcpbulk.o
+endif
+ifeq ($(WIFI_MQTT),1)
+LWIP_PORT_OBJS += ./mtkernel_3/lib/libnet/lwip/lwip_utk_mqtt.o
 endif
 endif
 
@@ -448,6 +470,7 @@ CFLAGS += -DTM_WIFI_CYW43=1 -DTM_WIFI_JOIN=$(WIFI_JOIN) \
           -DTM_WIFI_STATIC=$(WIFI_STATIC) -DTM_WIFI_DHCP=$(WIFI_DHCP) \
           -DTM_WIFI_DNS=$(WIFI_DNS) -DTM_WIFI_UDP=$(WIFI_UDP) \
           -DTM_WIFI_TCP=$(WIFI_TCP) -DTM_WIFI_TCPBULK=$(WIFI_TCPBULK) \
+          -DTM_WIFI_MQTT=$(WIFI_MQTT) \
           -DCYW43_ENABLE_BLUETOOTH=0 \
           -DCYW43_USE_OTP_MAC=1 -DPICO_CYW43_LOGGING_ENABLED=0 \
           -DPICO_RP2040=1 -DPICO_32BIT=1 -DPICO_ON_DEVICE=1 -DPICO_BUILD=1 \

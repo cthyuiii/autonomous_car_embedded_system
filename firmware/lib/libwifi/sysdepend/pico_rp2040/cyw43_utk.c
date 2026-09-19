@@ -28,6 +28,9 @@
 #if TM_WIFI_TCPBULK
 #include "lwip_utk_tcpbulk.h"
 #endif
+#if TM_WIFI_MQTT
+#include "lwip_utk_mqtt.h"
+#endif
 #if TM_WIFI_STATIC || TM_WIFI_DHCP
 #include "lwip_utk_ipv4.h"
 #endif
@@ -514,6 +517,13 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #endif
 #if TM_WIFI_DHCP
         update_dhcp_status();
+#endif
+#if TM_WIFI_MQTT
+        /* The MQTT client needs an address and nothing else, so it starts
+         * as soon as DHCP has one and runs for the life of the link. */
+        if(radio_status.dhcp_complete && radio_status.dhcp_result == ERR_OK) {
+            lwip_utk_mqtt_poll(&cyw43_state.netif[CYW43_ITF_STA]);
+        }
 #endif
 #if TM_WIFI_DNS
         update_dns_status();

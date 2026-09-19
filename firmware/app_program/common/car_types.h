@@ -66,7 +66,11 @@ typedef enum
     CAR_STATE_EXECUTE_TURN,
     CAR_STATE_AVOID_OBSTACLE,
     CAR_STATE_RECOVER_LINE,
-    CAR_STATE_HALTED
+    CAR_STATE_HALTED,
+    /* Appended so the numbers above stay put: they are published over
+     * MQTT and printed on the console, and renumbering them would
+     * silently change what every recorded log means. */
+    CAR_STATE_COLLISION
 } car_mission_state_t;
 
 /** One hump measurement. Height is estimated, not measured directly. */
@@ -100,6 +104,16 @@ typedef struct
     uint16_t               peak_hump_height_mm;
     car_obstacle_profile_t last_obstacle;
     uint32_t               total_distance_mm;
+    /* IMU block. Everything Buddy 4 reports, so the terrain analysis can
+     * be read off the broker instead of only off the bench console. */
+    int16_t                pitch_deg;
+    bool                   b_pitch_trusted;
+    int16_t                heading_deg;
+    int16_t                turn_rate_dps;
+    car_motion_event_t     motion_event;
+    bool                   b_collision;
+    bool                   b_terrain_stable;
+    uint16_t               terrain_rough_milli_g;
 } car_telemetry_t;
 
 #endif /* CAR_TYPES_H */
