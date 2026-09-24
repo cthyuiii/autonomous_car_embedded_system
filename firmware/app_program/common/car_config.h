@@ -22,21 +22,21 @@
  * 3.3 V and ground; the first listed pin is the cable's yellow wire, the
  * second its white wire.
  *
- *   Grove 1  GP0, GP1    right line sensor on GP1, the WHITE wire
- *   Grove 2  GP2, GP3    left wheel encoder on GP2
+ *   Grove 1  GP0, GP1    right wheel encoder on GP1, the WHITE wire
+ *   Grove 2  GP2, GP3    right line sensor on GP2
  *   Grove 3  GP4, GP5    LSM303DLHC compass on I2C0
  *   Grove 4  GP16, GP17  HC-SR04 trigger and echo
  *   Grove 5  GP6, GP26   left line sensor on GP6
- *   Grove 6  GP26, GP27  centre line sensor on GP26
- *   Grove 7  GP7, GP28   right wheel encoder on GP7
+ *   Grove 6  GP26, GP27  barcode sensor on GP26, right of the line
+ *   Grove 7  GP7, GP28   left wheel encoder on GP7
  *
  * NOTE: Grove 1 is the kernel's UART0 console: GP0 transmits, GP1 receives.
- * The console you read is USB, and UART0 is only a mirror of it, so both
- * pins can be taken back for sensors by muxing them to GPIO, which
- * line_init() does. Only GP1 is used, because GP0 is driven by the mirror
- * from boot until line_init() runs and must not meet a sensor output. The
- * yellow wire of the Grove 1 cable stays unconnected. This needs the USB
- * console build; line_barcode.c refuses to compile it for CONSOLE=uart.
+ * The console you read is USB and UART0 only mirrors it, so GP1, an input
+ * from power on, can carry the encoder once motion_init() muxes it to
+ * GPIO. GP0 is driven by the mirror from boot, so the yellow wire of the
+ * Grove 1 cable stays unconnected. The right line sensor sat on GP1 until
+ * 2026-09-25 and did not read there, so if the encoder never counts
+ * either, suspect the pin or the Grove 1 cable before the encoder.
  *
  * NOTE: GP26 is shared between Grove 5 and Grove 6. The plan above takes
  * it from Grove 6 only, so the white wire of Grove 5 must stay unused.
@@ -66,15 +66,20 @@
  * pin. MOTION_OPEN_LOOP is 1 while the encoders are not yet wired: moves and
  * turns are then timed from the speed setpoint instead of counted. Set it to
  * 0 the day both encoders are connected. TODO: flip when encoders arrive. */
-#define ENCODER_LEFT_PIN               2u   // Grove 2 yellow
-#define ENCODER_RIGHT_PIN              7u   // Grove 7 yellow
+#define ENCODER_LEFT_PIN               7u   // Grove 7 yellow
+#define ENCODER_RIGHT_PIN              1u   // Grove 1 WHITE, see the note
 #define ENCODER_IRQ_NUM               13u   // IO_IRQ_BANK0, RP2040 datasheet
 #define ENCODER_IRQ_LEVEL              2    // Same level the I2C driver uses
 #define ENCODER_SLOTS_PER_REV         20u   // TODO: count pulses per wheel turn
 #define ENCODER_STALL_TIMEOUT_MSEC   300u   // No pulse for this long is stopped
 #define WHEEL_CIRCUMFERENCE_MM       204u   // TODO: measure, roll one turn
 #define WHEEL_BASE_MM                150u   // TODO: measure, centre to centre
+/* ./flash.sh --no-encoders, or make NO_ENCODERS=1, forces this to 1 from
+ * the build whatever it says here, so the car can run without encoders
+ * while this file is set for them. */
+#ifndef MOTION_OPEN_LOOP
 #define MOTION_OPEN_LOOP               1u   // 1 no encoders yet, 0 closed loop
+#endif
 
 /* Motion control loop. Gains are in thousandths to avoid floating point. */
 #define MOTION_TICK_PERIOD_MSEC       10u
@@ -100,12 +105,15 @@
 
 /* Owner: Buddy 3, line and barcode. The values down to the next owner line. */
 /* Line sensors, three MH-Sensor-Series IR reflective modules with an LM393
- * comparator and a digital output, one per Grove port. NOTE: On this port
- * layout only the centre sensor sits on an ADC capable pin, so the analog
- * path is no longer available and LINE_SENSOR_IS_ANALOG must stay 0. */
+ * comparator and a digital output, one per Grove port. Left and right sit
+ * at the front and straddle the line: on a straight both see floor, with
+ * the 20 mm line between them, so their eyes want to be about 25 to 30 mm
+ * apart. The third sits off to the right and only reads barcodes; it never
+ * steers. NOTE: On this port layout only the barcode sensor sits on an ADC
+ * capable pin, so LINE_SENSOR_IS_ANALOG must stay 0. */
 #define LINE_SENSOR_LEFT_PIN           6u   // Grove 5 yellow
-#define LINE_SENSOR_CENTRE_PIN        26u   // Grove 6 yellow
-#define LINE_SENSOR_RIGHT_PIN          1u   // Grove 1 WHITE, see the note
+#define LINE_SENSOR_BARCODE_PIN       26u   // Grove 6 yellow
+#define LINE_SENSOR_RIGHT_PIN          2u   // Grove 2 yellow
 #define LINE_SENSOR_IS_ANALOG          0u   // Must stay 0 on this layout
 #define LINE_SENSOR_DARK_LEVEL         1u   // TODO: confirm, level over black
 
@@ -117,7 +125,13 @@
  * high, which line_get_health() will show as a sensor that never reads
  * dark. */
 #define LINE_SENSOR_PULL_UP            0u   // 0 pull down, 1 pull up
-#define LINE_JUNCTION_SAMPLES          2u   // All three dark for this many
+#define LINE_JUNCTION_SAMPLES          2u   // Left and right dark this many
+
+/* With neither line sensor dark the line is either centred between them or
+ * gone, and two sensors cannot tell which. It counts as centred for this
+ * long after either sensor last saw it, then as lost. Longer rides out a
+ * well aligned straight; shorter notices an overshot curve sooner. */
+#define LINE_CENTRED_HOLD_MSEC       500u   // TODO: tune on the track
 
 /* Line sampling period. The kernel tick is CNF_TIMER_PERIOD in
  * config/config.h, 10 ms as shipped, and a task delay rounds up to it. At

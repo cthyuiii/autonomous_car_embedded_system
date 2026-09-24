@@ -3,7 +3,7 @@
  * @brief IR line position, junctions and Code 39 barcode decoding.
  *
  * NOTE: The barcode decoder keeps a shift register of the most recent bar
- * and space widths seen by the centre sensor. Every time a bar ends it
+ * and space widths seen by the barcode sensor. Every time a bar ends it
  * tries to read the last 29 elements as start, character, stop. Only a
  * correctly aligned symbol passes both asterisk checks, so no separate
  * quiet zone detection is needed; a run longer than
@@ -28,16 +28,17 @@
 /* A sensor on GP0 or GP1 takes the UART0 console pins. That is only safe
  * when the console is USB and UART0 is a mirror nobody reads. */
 #if !defined(CAR_HOST_TEST) && !defined(TM_CONSOLE_USB_CDC)
-#if (LINE_SENSOR_LEFT_PIN < 2u) || (LINE_SENSOR_CENTRE_PIN < 2u) \
+#if (LINE_SENSOR_LEFT_PIN < 2u) || (LINE_SENSOR_BARCODE_PIN < 2u) \
     || (LINE_SENSOR_RIGHT_PIN < 2u)
 #error "A line sensor on GP0 or GP1 needs the USB console: CONSOLE=usb_cdc"
 #endif
 #endif
 
 #define LINE_BIT_LEFT            0x01u
-#define LINE_BIT_CENTRE          0x02u
+#define LINE_BIT_BARCODE         0x02u
 #define LINE_BIT_RIGHT           0x04u
 #define LINE_BIT_ALL             0x07u
+#define LINE_BITS_LINE           (LINE_BIT_LEFT | LINE_BIT_RIGHT)
 
 /* Code 39: nine elements per character, three of them wide, and a symbol
  * of three characters with one gap between neighbours. */
@@ -48,7 +49,7 @@
 #define BARCODE_RUNS_MAX         32u
 #define BARCODE_TABLE_SIZE       44u
 
-/** One bar or space as timed by the centre sensor. */
+/** One bar or space as timed by the barcode sensor. */
 typedef struct
 {
     uint32_t width_usec;
@@ -83,6 +84,8 @@ static uint8_t  g_raw_levels       = 0u;
 static uint8_t  g_seen_dark        = 0u;
 static uint8_t  g_seen_light       = 0u;
 static uint8_t  g_junction_samples = 0u;
+static bool     g_b_touched        = false;
+static uint32_t g_touch_usec       = 0u;
 static run_t    g_runs[BARCODE_RUNS_MAX];
 static uint8_t  g_run_count        = 0u;
 static bool     g_run_started      = false;
@@ -107,6 +110,7 @@ car_status_t line_init (void)
     g_seen_dark        = 0u;
     g_seen_light       = 0u;
     g_junction_samples = 0u;
+    g_b_touched        = false;
     g_run_count        = 0u;
     g_run_started      = false;
 
@@ -115,11 +119,11 @@ car_status_t line_init (void)
     car_hw_enable_timer();
 #if LINE_SENSOR_PULL_UP
     car_hw_gpio_input_pullup(LINE_SENSOR_LEFT_PIN);
-    car_hw_gpio_input_pullup(LINE_SENSOR_CENTRE_PIN);
+    car_hw_gpio_input_pullup(LINE_SENSOR_BARCODE_PIN);
     car_hw_gpio_input_pullup(LINE_SENSOR_RIGHT_PIN);
 #else
     car_hw_gpio_input_pulldown(LINE_SENSOR_LEFT_PIN);
-    car_hw_gpio_input_pulldown(LINE_SENSOR_CENTRE_PIN);
+    car_hw_gpio_input_pulldown(LINE_SENSOR_BARCODE_PIN);
     car_hw_gpio_input_pulldown(LINE_SENSOR_RIGHT_PIN);
 #endif
 #endif
@@ -172,11 +176,13 @@ car_status_t line_get_position (int16_t * p_error)
 
     if (NULL != p_error)
     {
-        uint8_t mask = sample_sensors();
+        uint8_t  mask = sample_sensors();
+        uint8_t  line = (uint8_t)(mask & LINE_BITS_LINE);
+        uint32_t now  = clock_usec();
 
         g_sensor_mask = mask;
 
-        if (LINE_BIT_ALL == mask)
+        if (LINE_BITS_LINE == line)
         {
             if (g_junction_samples < LINE_JUNCTION_SAMPLES)
             {
@@ -188,34 +194,42 @@ car_status_t line_get_position (int16_t * p_error)
             g_junction_samples = 0u;
         }
 
+        if (0u != line)
+        {
+            g_b_touched  = true;
+            g_touch_usec = now;
+        }
+
         status = CAR_OK;
 
-        switch (mask)
+        /* The two sensors straddle the line, so one of them dark means the
+         * line has drifted under it. */
+        switch (line)
         {
-            case LINE_BIT_CENTRE:
-            case LINE_BIT_ALL:
-            case (LINE_BIT_LEFT | LINE_BIT_RIGHT):
-                *p_error = 0;
-            break;
-
-            case (LINE_BIT_CENTRE | LINE_BIT_RIGHT):
-                *p_error = 1;
-            break;
-
             case LINE_BIT_RIGHT:
                 *p_error = 2;
-            break;
-
-            case (LINE_BIT_CENTRE | LINE_BIT_LEFT):
-                *p_error = -1;
             break;
 
             case LINE_BIT_LEFT:
                 *p_error = -2;
             break;
 
+            case LINE_BITS_LINE:
+                *p_error = 0;
+            break;
+
             default:
-                status = CAR_ERR_NO_DATA;
+                /* Neither dark: centred if one of them saw the line lately,
+                 * otherwise it is gone. */
+                if (g_b_touched && ((now - g_touch_usec)
+                                    < (LINE_CENTRED_HOLD_MSEC * 1000u)))
+                {
+                    *p_error = 0;
+                }
+                else
+                {
+                    status = CAR_ERR_NO_DATA;
+                }
             break;
         }
     }
@@ -239,7 +253,7 @@ car_status_t line_get_sensor_mask (uint8_t * p_mask)
 
 bool line_is_at_junction (void)
 {
-    // TODO: True when all three mask bits are set for longer than one
+    // TODO: True when both line sensors are dark for longer than one
     //       sample, to reject a single noisy reading.
     return (g_junction_samples >= LINE_JUNCTION_SAMPLES);
 }
@@ -254,7 +268,7 @@ car_status_t barcode_poll (car_nav_command_t * p_command)
     if (NULL != p_command)
     {
         uint32_t now    = clock_usec();
-        bool     b_dark = (0u != (sample_sensors() & LINE_BIT_CENTRE));
+        bool     b_dark = (0u != (sample_sensors() & LINE_BIT_BARCODE));
 
         status = CAR_ERR_NO_DATA;
 
@@ -518,8 +532,8 @@ static car_nav_command_t command_for (char symbol)
 #ifdef CAR_HOST_TEST
 
 /* Host fakes: the test injects what the sensors and the clock would say.
- * The default mask is the centre sensor on the line. */
-static uint8_t  g_host_mask = LINE_BIT_CENTRE;
+ * The default mask is every sensor over the floor. */
+static uint8_t  g_host_mask = 0u;
 static uint32_t g_host_usec = 0u;
 
 void line_host_inject (uint8_t mask, uint32_t now_usec)
@@ -543,7 +557,7 @@ static uint32_t clock_usec (void)
 /**
  * @brief Sample the three digital sensors into one mask.
  *
- * @return Bit 0 left, bit 1 centre, bit 2 right; a set bit means dark.
+ * @return Bit 0 left, bit 1 barcode, bit 2 right; a set bit means dark.
  */
 static uint8_t read_sensors (void)
 {
@@ -554,9 +568,9 @@ static uint8_t read_sensors (void)
         mask |= LINE_BIT_LEFT;
     }
 
-    if (LINE_SENSOR_DARK_LEVEL == gpio_get_val(LINE_SENSOR_CENTRE_PIN))
+    if (LINE_SENSOR_DARK_LEVEL == gpio_get_val(LINE_SENSOR_BARCODE_PIN))
     {
-        mask |= LINE_BIT_CENTRE;
+        mask |= LINE_BIT_BARCODE;
     }
 
     if (LINE_SENSOR_DARK_LEVEL == gpio_get_val(LINE_SENSOR_RIGHT_PIN))

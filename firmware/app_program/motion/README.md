@@ -16,7 +16,7 @@ fitted and is driven open loop; only a wheel that pulsed and then went
 quiet while still commanded is a fault. `motion_get_state()` reports which
 encoders were actually found.
 
-Set `MOTION_OPEN_LOOP` to 0 once the encoder leads are on Grove 2 and 7,
+Set `MOTION_OPEN_LOOP` to 0 once the encoder leads are on Grove 7 and 1,
 then tune the gains below. Speed is measured from the interval between
 pulses, so it resolves properly even at 20 pulses per turn.
 

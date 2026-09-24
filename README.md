@@ -61,11 +61,12 @@ What each module does today, and the one thing to confirm first on it:
 - **motion** drives the board's H-bridge over PWM and steers with
   `motion_drive_steer()`. `MOTION_OPEN_LOOP` is 1 because the encoders are
   not wired, so moves and turns are timed from the speed setpoint. Set it
-  to 0 when the encoder leads are on Grove 2 and 7. First check: the motor
+  to 0 when the encoder leads are on Grove 7 and 1. First check: the motor
   test buttons, then wheel direction.
-- **line_barcode** reads the three MH-Sensor-Series modules on Grove 5, 6
-  and 1 as a 3 bit mask, and decodes Code 39 from the centre sensor with
-  the microsecond timer. First check: `LINE_SENSOR_DARK_LEVEL`.
+- **line_barcode** reads three MH-Sensor-Series modules as a 3 bit mask.
+  Left (Grove 5) and right (Grove 2) straddle the line and steer; the
+  third (Grove 6) sits off to the right and decodes Code 39 with the
+  microsecond timer. First check: `LINE_SENSOR_DARK_LEVEL`.
 - **imu_terrain** runs the LSM303DLHC on Grove 3, moving the kernel's I2C
   unit off the motor pins at init. Pitch is relative to a level reference
   taken at boot. First check: `IMU_PITCH_SIGN`, nose up must read positive.
@@ -144,6 +145,7 @@ replaces it on disk. Build and flash in one step and that cannot bite you:
     ./flash.sh line_barcode     # and so on for each subsystem
     ./flash.sh --wifi           # the car with the radio and MQTT
     ./flash.sh --no-recover     # the car, but it never searches for the line
+    ./flash.sh --no-encoders    # the car timed open loop, encoders ignored
     ./flash.sh --wifi comms     # the comms bench, which needs the radio
     ./flash.sh servo            # servo only, straight at the PWM block
     ./flash.sh --build-only motion
@@ -159,6 +161,12 @@ finds nothing and ends in `HALTED` within a metre, which is why the hump
 and obstacle behaviour cannot otherwise be driven. It is a car option and
 refuses to combine with a bench. Switching it on or off rebuilds every
 `app_program` object, because it changes a define and no source file.
+
+`--no-encoders` forces `MOTION_OPEN_LOOP` to 1, so moves and turns are
+timed and the encoder pins are never touched, whatever `car_config.h`
+says. Without it, a closed loop image on a car with no encoders never
+sees the wheels move, so every move and turn waits forever. It combines
+with everything, benches included, and rebuilds the same way.
 
 **The first flash of a Pico needs the BOOTSEL button.** Hold it down while
 plugging in the USB cable, then run the script. From then on `picotool`
@@ -256,7 +264,7 @@ to flash a failed build. Watch any of them with
 | 3 line_barcode | `./flash.sh line_barcode` |
 | 4 imu_terrain | `./flash.sh imu_terrain`, and again with `BENCH_DRIVE` 1 in `bench_imu_terrain.c` for hump height |
 | 5 scanning | `./flash.sh servo`, `./flash.sh scanning`, `./flash.sh detour` |
-| team | `./flash.sh`, `./flash.sh --wifi` for the radio build, `./flash.sh --no-recover` to drive with no line sensors fitted |
+| team | `./flash.sh`, `./flash.sh --wifi` for the radio build, `./flash.sh --no-recover` to drive with no line sensors fitted, `./flash.sh --no-encoders` to drive with no encoders fitted |
 
 Add `--build-only` to any of them to build without flashing, for example
 `./flash.sh --build-only motion`. Two benches have a flag to flip in the
@@ -593,7 +601,8 @@ until line following behaves.
    from a laptop and watch it echo.
 8. **On hold** until the IR modules go back on: `./flash.sh line_barcode`.
    Wave each sensor over tape until all three health letters are CAPITAL,
-   then slide the car across so the mask walks 001, 011, 010, 110, 100.
+   then slide the car sideways across the line so the mask walks 001, 000,
+   100 (right, barcode, left) and the error -2, 0, 2.
    Drive it over a printed barcode and watch for `barcode command`.
 9. The whole car on the floor. This needs step 8 first: without the line
    sensors the car has nothing to follow and halts once the search gives
@@ -610,63 +619,53 @@ numbers and pairs are from the board documentation.
 | Motor right M2A, M2B      | GP10, GP11      | M2 terminal, verified       |
 | Scan servo                | GP12            | header S1, verified         |
 | Console mirror, UART0 TX  | GP0             | Grove 1 yellow, leave loose |
-| Line sensor right         | GP1             | Grove 1, white              |
-| Encoder left              | GP2             | Grove 2, yellow             |
+| Encoder right             | GP1             | Grove 1, white              |
+| Line sensor right         | GP2             | Grove 2, yellow             |
 | I2C0 SDA, SCL to IMU      | GP4, GP5        | Grove 3                     |
 | Sonar trigger, echo       | GP16, GP17      | Grove 4                     |
 | Line sensor left          | GP6             | Grove 5, yellow             |
-| Line sensor centre        | GP26            | Grove 6, yellow             |
-| Encoder right             | GP7             | Grove 7, yellow             |
+| Barcode sensor            | GP26            | Grove 6, yellow             |
+| Encoder left              | GP7             | Grove 7, yellow             |
 | Board: NeoPixels          | GP18            | verified, leave alone       |
 | Board: buttons            | GP20, GP21      | verified, spare inputs      |
 | Board: buzzer             | GP22            | verified, leave alone       |
 | Pico W radio              | GP23 to 25, 29  | not available               |
 
 GP26 is shared between Grove 5 and Grove 6; only Grove 6 uses it. Which
-physical sensor is left, centre and right is set by where each module is
-mounted: swap the three `LINE_SENSOR_*_PIN` numbers to match. This layout
-uses one Grove cable per port, seven in all. If cables are short, both
-encoders fit on Grove 7 instead (left GP7 yellow, right GP28 white, with
-their supply and ground bridged) and Grove 2 goes back to the right line
-sensor on GP2; that is a three number change in `car_config.h`.
+physical sensor is left, barcode and right is set by where each module is
+mounted: swap the three `LINE_SENSOR_*_PIN` numbers to match.
 
-## Reclaiming Grove 1 for a sensor
+## Line sensors and encoders
 
 Grove 1 carries UART0, the kernel's serial console. The console you
-actually read is USB, and UART0 only mirrors it, so the pins can be taken
-back. GP1 is UART receive, an input on the Pico's side, so a sensor output
-can sit on it from power on with nothing driving against it; `line_init()`
-then switches the pin to plain GPIO and the mirror loses its receive line,
-which nothing on the car uses. GP0 is UART transmit and is driven by the
-Pico from boot until `line_init()` runs, so it must never meet a sensor
-output. That is why the sensor goes on the **white** wire and the yellow
-end of that cable stays unconnected. The build refuses this pin layout
-under `CONSOLE=uart`, where the serial line is the only console.
+actually read is USB and UART0 only mirrors it, so its pins can be taken
+back. GP1 is UART receive, an input on the Pico's side, so the right
+encoder can sit on it from power on with nothing driving against it;
+`motion_init()` then switches it to plain GPIO. GP0 is UART transmit and
+is driven from boot, so it must never meet an encoder output: the encoder
+goes on the **white** wire and the yellow wire stays unconnected.
 
-Wiring for this layout:
+The right line sensor sat on GP1 first and did not read there, so it moved
+to Grove 2. If the right encoder never counts either, suspect GP1 or the
+Grove 1 cable before the encoder.
 
 | Cable   | Red      | Black     | Yellow             | White          |
 |---------|----------|-----------|--------------------|----------------|
-| Grove 1 | IR VCC   | IR GND    | nothing, tape it   | IR DO          |
-| Grove 2 | motor white, supply | motor blue, ground | motor red, A phase | nothing |
+| Grove 1 | motor white, supply | motor blue, ground | nothing, tape it | motor red, A phase |
+| Grove 2 | IR VCC   | IR GND    | IR DO, right line sensor | nothing  |
 | Grove 7 | motor white, supply | motor blue, ground | motor red, A phase | nothing |
 
 Test it in this order, wheels off the ground:
 
-1. Build and flash the line bench, `make CONSOLE=usb_cdc BENCH=line_barcode
-   -j8`. Open `screen` first, then press reset.
-2. Within two seconds you should see `line bench: analog 0`. That line is
-   printed after the sensor pins have been claimed, so seeing it proves the
-   USB console survived losing UART0's receive pin. If nothing appears, the
-   USB console never depended on Grove 1, so look at the serial port name
-   or the flash, not at this change.
-3. The bench prints `mask RCL` every 100 ms, right sensor first. Hold black
-   tape under the Grove 1 sensor only: the first digit must change and
-   `error` must read 2. If the digit changes the wrong way, flip
-   `LINE_SENSOR_DARK_LEVEL`.
+1. `./flash.sh line_barcode`, then open `screen`.
+2. After two seconds you should see `line bench: pins L6 B26 R2`, then a
+   status line every 200 ms or so.
+3. The mask prints right, barcode, left. Hold black tape under the Grove 2
+   sensor only: the first digit must change and `error` must read 2. If
+   the digit changes the wrong way, flip `LINE_SENSOR_DARK_LEVEL`.
 4. Do the same under the Grove 5 sensor, last digit and error -2, and the
-   Grove 6 sensor, middle digit and error 0. Every sensor now has a known
-   port.
+   Grove 6 sensor, middle digit only, with `error` unchanged because the
+   barcode sensor never steers. Every sensor now has a known port.
 5. Build the car, flash, and confirm `motion ready` and `line ready` at
    boot. From here the bring up order above applies.
 

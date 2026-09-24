@@ -22,19 +22,27 @@ endif
 APP_SRCS := $(filter-out ../app_program/car_main.c, $(APP_SRCS)) $(BENCH_SRC)
 endif
 
-# make NO_RECOVER=1 builds the car so it never enters RECOVER_LINE. Folded
-# into the stamp below, because it changes no source file either.
+# make NO_RECOVER=1 builds the car so it never enters RECOVER_LINE, and
+# make NO_ENCODERS=1 forces MOTION_OPEN_LOOP to 1. Both are folded into the
+# stamp below, because they change no source file either.
+APP_DEFS :=
+APP_TAG  :=
 ifeq ($(NO_RECOVER),1)
-APP_DEFS := -DCAR_SKIP_LINE_RECOVERY=1
+APP_DEFS += -DCAR_SKIP_LINE_RECOVERY=1
+APP_TAG  := $(APP_TAG)_norecover
+endif
+ifeq ($(NO_ENCODERS),1)
+APP_DEFS += -DMOTION_OPEN_LOOP=1u
+APP_TAG  := $(APP_TAG)_noencoders
 endif
 
-# Switching between the car, a bench and NO_RECOVER changes the object list
+# Switching between the car, a bench and these flags changes the object list
 # or the defines, but touches no source, and make only compares timestamps,
 # so it would happily reuse the previous objects and flash the wrong
 # program. A stamp records which selection the objects were built from; when
 # it differs our objects and the image go, so both rules run again. Only our
 # objects, never this file or the kernel's, so it costs a few seconds.
-APP_SELECTED := mtkernel_3/app_program/.selected_$(if $(BENCH),$(BENCH),car)$(if $(APP_DEFS),_norecover,)
+APP_SELECTED := mtkernel_3/app_program/.selected_$(if $(BENCH),$(BENCH),car)$(APP_TAG)
 ifeq ($(wildcard $(APP_SELECTED)),)
 $(shell mkdir -p mtkernel_3/app_program; \
         rm -f mtkernel_3/app_program/.selected_* $(EXE_FILE).elf \

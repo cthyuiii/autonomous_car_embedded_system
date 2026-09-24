@@ -23,7 +23,8 @@
 #define TEST_WIDE_USEC     90000u
 #define TEST_QUIET_USEC   200000u
 #define TEST_ELEMENTS         29u
-#define TEST_MASK_CENTRE     0x02u
+#define TEST_MASK_BARCODE    0x02u
+#define TEST_HOLD_USEC     (LINE_CENTRED_HOLD_MSEC * 1000u)
 
 /* Wide element flags for '*', 'L', '*', nine per character, MSB first. */
 static uint16_t const g_test_symbol[3] = { 0x094u, 0x043u, 0x094u };
@@ -45,7 +46,9 @@ int main (void)
 
     assert(CAR_OK == line_init());
     assert(CAR_OK == line_calibrate());
-    assert(CAR_OK == line_get_position(&error));
+
+    /* Nothing has seen the line yet, so it is lost, not centred. */
+    assert(CAR_ERR_NO_DATA == line_get_position(&error));
     assert(CAR_ERR_RANGE == line_get_position(NULL));
     assert(CAR_OK == line_get_sensor_mask(&mask));
     assert(CAR_ERR_RANGE == line_get_sensor_mask(NULL));
@@ -59,24 +62,36 @@ int main (void)
     assert(CAR_OK == line_get_health(&health));
     assert(0x00u == health);
 
-    /* Position steps follow the mask. Bit 0 is left, bit 2 is right. */
+    /* The line sensors straddle the line. Bit 0 is left, bit 2 is right. */
     line_host_inject(0x01u, 0u);
     assert(CAR_OK == line_get_position(&error));
     assert(-2 == error);
     line_host_inject(0x04u, 0u);
     assert(CAR_OK == line_get_position(&error));
     assert(2 == error);
-    line_host_inject(0x00u, 0u);
+
+    /* Neither dark long after the last sighting is lost, and the caller
+     * keeps the last good error. */
+    line_host_inject(0x00u, TEST_HOLD_USEC);
     assert(CAR_ERR_NO_DATA == line_get_position(&error));
     assert(2 == error);
+
+    /* Neither dark just after a sighting is the line between them. The
+     * barcode sensor seeing a bar does not count as the line. */
+    line_host_inject(0x01u, TEST_HOLD_USEC);
+    assert(CAR_OK == line_get_position(&error));
+    line_host_inject(TEST_MASK_BARCODE, TEST_HOLD_USEC + 1u);
+    assert(CAR_OK == line_get_position(&error));
+    assert(0 == error);
 
     /* Every sensor has now been seen dark and light, so all three are
      * counted as working. A sensor stuck at one level never would be. */
     assert(CAR_OK == line_get_health(&health));
     assert(0x07u == health);
 
-    /* A junction needs the reading to hold. */
-    line_host_inject(0x07u, 0u);
+    /* A junction is both line sensors dark, and needs the reading to hold.
+     * The barcode sensor plays no part in it. */
+    line_host_inject(0x05u, 0u);
     assert(CAR_OK == line_get_position(&error));
     assert(false == line_is_at_junction());
     assert(CAR_OK == line_get_position(&error));
@@ -154,7 +169,7 @@ static car_nav_command_t cross_symbol (uint32_t const * p_widths,
 
     for (index = 0u; index < TEST_ELEMENTS; index++)
     {
-        uint8_t mask = (0u == (index % 2u)) ? TEST_MASK_CENTRE : 0u;
+        uint8_t mask = (0u == (index % 2u)) ? TEST_MASK_BARCODE : 0u;
 
         line_host_inject(mask, *p_now_usec);
         assert(CAR_ERR_NO_DATA == barcode_poll(&decoded));

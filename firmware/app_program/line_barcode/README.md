@@ -7,11 +7,13 @@ barcode decoding and the navigation command it produces. API is
 `include/line_barcode.h`. Knobs are `LINE_*`, `TRACK_*` and `BARCODE_*` in
 `common/car_config.h`.
 
-Implemented for the three MH-Sensor-Series digital modules on Grove 5, 6
-and 1. The Grove 1 sensor sits on GP1, the port's white wire, because GP0
-is the console mirror's transmit line; see the root README before moving
-it. Position is a five step error from the 3 bit mask. The decoder
-times every bar and space the centre sensor sees with the microsecond
+Implemented for three MH-Sensor-Series digital modules. Left (Grove 5)
+and right (Grove 2) sit at the front and straddle the line, about 25 to
+30 mm apart, so both see floor on a straight. The third (Grove 6) sits off
+to the right and only reads barcodes. Position is -2, 0 or 2; neither sensor
+dark counts as centred for `LINE_CENTRED_HOLD_MSEC` after the last
+sighting, then as lost. The decoder
+times every bar and space the barcode sensor sees with the microsecond
 timer, classifies the three widest of each nine as wide, checks both
 asterisks, and tries the sequence reversed, so a symbol reads from either
 end at any speed that still samples every bar. `LINE_SENSOR_DARK_LEVEL`
@@ -24,9 +26,9 @@ sensor. A counter that never moves means nothing is reaching that pin.
 
 `line_get_health()` is the next: a sensor only counts as
 working once it has been seen both dark and light, and the bench prints
-its letter in capitals when it has. Three lower case letters with a steady
-`mask 111` is three sensors that have never changed, which is wiring, not
-a junction.
+its letter in capitals when it has. Lower case letters with a steady
+`mask 1x1` is sensors that have never changed, which is wiring, not
+a junction. The barcode letter only capitalises once it crosses a bar.
 
 Done means `test_line_barcode.c` passes on the host, all three health
 letters capitalise, `bench_line_barcode` shows a clean mask sweep by hand, and all four barcodes decode correctly

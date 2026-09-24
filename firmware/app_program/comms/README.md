@@ -26,7 +26,7 @@ Telemetry on `car/telemetry`, one JSON object every 200 ms:
 | state         | car_mission_state_t, 0 init to 6 halted, 7 collision |
 | speed         | average wheel speed, mm per second                   |
 | encl, encr    | encoder counts since boot                            |
-| mask          | line sensor bits, 1 left, 2 centre, 4 right          |
+| mask          | line sensor bits, 1 left, 2 barcode, 4 right         |
 | nav           | last car_nav_command_t decoded or received           |
 | hump          | peak hump height this run, mm                        |
 | dist          | ground distance since boot, mm                       |

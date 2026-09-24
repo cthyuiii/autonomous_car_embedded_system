@@ -100,6 +100,7 @@ static volatile car_nav_command_t g_pending_nav_command = CAR_NAV_NONE;
 
 /* Line following law state, mission task only. */
 static int16_t  g_prev_error       = 0;
+static int16_t  g_last_side        = 0;    // Last non zero error, to lean to
 static uint32_t g_lost_since_mm    = 0u;
 static uint32_t g_last_sonar_msec  = 0u;
 static uint16_t g_seen_samples     = 0u;
@@ -1096,6 +1097,11 @@ static bool steer_along_line (void)
         g_prev_error    = error;
         g_lost_since_mm = distance;
 
+        if (0 != error)
+        {
+            g_last_side = error;
+        }
+
         if (g_seen_samples < CAR_LINE_SEEN_SAMPLES)
         {
             g_seen_samples++;
@@ -1121,8 +1127,8 @@ static bool steer_along_line (void)
         }
         else if (lost_mm < CAR_LINE_LOST_LIMIT_MM)
         {
-            steer = (g_prev_error < 0) ? -CAR_STEER_LOST_PERMILLE
-                                       : CAR_STEER_LOST_PERMILLE;
+            steer = (g_last_side < 0) ? -CAR_STEER_LOST_PERMILLE
+                                      : CAR_STEER_LOST_PERMILLE;
         }
         else
         {
