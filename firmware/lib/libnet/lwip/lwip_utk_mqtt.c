@@ -57,14 +57,6 @@ static uint32_t incoming_fits;
 static uint32_t connecting;
 static uint32_t last_attempt_ms;
 
-static void copy_bounded(char *dst, const char *src, uint32_t size)
-{
-    uint32_t i;
-
-    for(i = 0; i < size - 1U && src[i] != '\0'; i++) dst[i] = src[i];
-    dst[i] = '\0';
-}
-
 static void subscribe_cb(void *arg, err_t err)
 {
     (void)arg;
@@ -74,7 +66,7 @@ static void subscribe_cb(void *arg, err_t err)
 static void incoming_publish_cb(void *arg, const char *topic, u32_t tot_len)
 {
     (void)arg;
-    copy_bounded(incoming.topic, topic, sizeof(incoming.topic));
+    strlcpy(incoming.topic, topic, sizeof(incoming.topic));
     incoming.length = 0;
     incoming_fits = (tot_len <= LWIP_UTK_MQTT_RX_PAYLOAD);
 }
@@ -165,7 +157,7 @@ int32_t lwip_utk_mqtt_publish(const char *topic, const void *payload,
     } else {
         tx_slot_t *slot = &tx_ring[tx_head];
 
-        copy_bounded(slot->topic, topic, sizeof(slot->topic));
+        strlcpy(slot->topic, topic, sizeof(slot->topic));
         if(length != 0) memcpy(slot->payload, payload, length);
         slot->length = length;
         tx_head = next;
@@ -189,7 +181,7 @@ int32_t lwip_utk_mqtt_receive(char *topic, uint16_t topic_size, void *payload,
         uint16_t n = slot->length;
 
         if(n > payload_size) n = payload_size;
-        copy_bounded(topic, slot->topic, topic_size);
+        strlcpy(topic, slot->topic, topic_size);
         memcpy(payload, slot->payload, n);
         *length = n;
         rx_tail = (rx_tail + 1U) % LWIP_UTK_MQTT_RX_SLOTS;

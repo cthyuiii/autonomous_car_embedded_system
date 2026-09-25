@@ -701,4 +701,8 @@ than times itself.
   3.81; `lib/libnet/lwip/include/lwipopts.h` enables TCP and sizes the
   pools for MQTT; `lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c` polls
   the MQTT phase once DHCP has an address; `lib/libnet/lwip/lwip_utk_mqtt.*`
-  is new; and `app_program/subdir.mk` is ours.
+  is new; `app_program/subdir.mk` is ours; and every board but
+  `pico_rp2040` was deleted on 2026-09-25, along with the branches that
+  selected them in `build_make/makefile`, `build_make/mtkernel_3/device/*/subdir.mk`,
+  `include/sys/machine.h` and `config/config.h`. Git history has them if
+  another board is ever needed.

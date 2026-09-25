@@ -22,47 +22,6 @@
 /* ===== System dependencies definitions ================================ */
 #include <config.h>
 
-#ifdef _IOTE_M367_
-#include "sysdepend/iote_m367/machine.h"
-#define Csym(sym) sym
-#endif
-
-#ifdef _IOTE_STM32L4_
-#include "sysdepend/iote_stm32l4/machine.h"
-#define Csym(sym) sym
-#endif
-
-#ifdef _IOTE_RX231_
-#include "sysdepend/iote_rx231/machine.h"
-#define Csym(sym) _##sym
-#endif
-
-#ifdef _IOTE_RZA2M_
-#include "sysdepend/iote_rza2m/machine.h"
-#define Csym(sym) sym
-#endif
-
-/* ----- μT-Kernel BSP ------------------------------------------------- */
-#ifdef _NUCLEO_L476_
-#include "sysdepend/nucleo_l476/machine.h"
-#define Csym(sym) sym
-#endif
-
-#ifdef _NUCLEO_H723_
-#include "sysdepend/nucleo_h723/machine.h"
-#define Csym(sym) sym
-#endif
-
-#ifdef _RTB_RX65N_
-#include "sysdepend/rtb_rx65n/machine.h"
-#define Csym(sym) _##sym
-#endif
-
-#ifdef _RSK_RX65N_
-#include "sysdepend/rsk_rx65n/machine.h"
-#define Csym(sym) _##sym
-#endif
-
 #ifdef _PICO_RP2040_
 #include "sysdepend/pico_rp2040/machine.h"
 #define Csym(sym) sym

@@ -6,11 +6,6 @@
 EXE_FILE := mtkernel_3
 
 # Specify only one target name
-#TARGET := _IOTE_M367_
-#TARGET := _IOTE_RX231_
-#TARGET := _IOTE_STM32L4_
-#TARGET := _IOTE_RZA2M_
-#TARGET := _NUCLEO_H723_
 TARGET := _PICO_RP2040_
 
 RM := rm -rf
@@ -34,21 +29,6 @@ include mtkernel_3/kernel/inittask/subdir.mk
 
 include mtkernel_3/device/subdir.mk
 
-ifeq ($(TARGET), _IOTE_M367_)
-include iote_m367.mk
-endif
-ifeq ($(TARGET), _IOTE_RX231_)
-include iote_rx231.mk
-endif
-ifeq ($(TARGET), _IOTE_STM32L4_)
-include iote_stm32l4.mk
-endif
-ifeq ($(TARGET), _IOTE_RZA2M_)
-include iote_rza2m.mk
-endif
-ifeq ($(TARGET), _NUCLEO_H723_)
-include nucleo_h723.mk
-endif
 ifeq ($(TARGET), _PICO_RP2040_)
 include pico_rp2040.mk
 endif

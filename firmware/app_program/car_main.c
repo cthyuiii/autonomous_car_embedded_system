@@ -686,7 +686,7 @@ static void state_follow_line (void)
     else if (!steer_along_line())
     {
         (void)motion_stop();
-        (void)scan_recover_start(g_prev_error < 0);
+        (void)scan_recover_start(g_last_side < 0);
         enter_state(CAR_STATE_RECOVER_LINE);
     }
     else

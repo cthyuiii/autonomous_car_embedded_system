@@ -20,16 +20,6 @@
 #define __TK_CONFIG__
 
 /*---------------------------------------------------------------------- */
-/*  Target Name
-	Define the system target name. Alternatively, define the target name 
-	in the development environment.
- */
-//#define _IOTE_M367_
-//#define _IOTE_RX231_
-//#define _IOTE_STM32L4_
-//#define _IOTE_RZA2M_
-
-/*---------------------------------------------------------------------- */
 /* SYSCONF : micro T-Kernel system configuration
  */
 
