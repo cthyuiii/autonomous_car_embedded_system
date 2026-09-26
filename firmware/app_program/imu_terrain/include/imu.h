@@ -1,4 +1,4 @@
-/** @file imu_terrain.h
+/** @file imu.h
  *
  * @brief LSM303DLHC based tilt, hump, motion event and collision sensing.
  *
@@ -20,13 +20,13 @@
  * team first.
  */
 
-#ifndef IMU_TERRAIN_H
-#define IMU_TERRAIN_H
+#ifndef IMU_H
+#define IMU_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "car_types.h"
+#include "car.h"
 
 /**
  * @brief Bring up I2C and configure both sensors at their sample rates.
@@ -156,11 +156,10 @@ car_status_t imu_get_event (car_motion_event_t * p_event);
 /**
  * @brief Estimate the yaw rate.
  *
- * WARNING: There is no gyroscope. IMU_TURN_RATE_FROM_ENCODERS selects the
- * source. From encoders, rate is the wheel speed difference over
- * WHEEL_BASE_MM, which is clean but blind to wheel slip. From the
- * magnetometer, rate is the heading derivative, which sees slip but is
- * noisy and disturbed by the motors. Both doors are left open.
+ * WARNING: There is no gyroscope. Rate is the wheel speed difference over
+ * WHEEL_BASE_MM, fed in by imu_feed_odometry(), which is clean but blind
+ * to wheel slip. The magnetometer's heading is too disturbed by the
+ * motors to differentiate.
  *
  * @param[out] p_rate_dps Clockwise positive.
  *
@@ -184,11 +183,31 @@ bool imu_is_hump_detected (void);
  * sin(pitch) over distance travelled while climbing, with distance from
  * the encoders through imu_feed_odometry().
  *
- * @param[out] p_hump Destination, must not be NULL.
+ * @param[out] p_height_mm Destination, must not be NULL. 0 before the
+ *                         first hump.
  *
- * @return CAR_OK, or CAR_ERR_RANGE if p_hump is NULL.
+ * @return CAR_OK, or CAR_ERR_RANGE if p_height_mm is NULL.
  */
-car_status_t imu_get_peak_hump (car_hump_t * p_hump);
+car_status_t imu_get_peak_hump (uint16_t * p_height_mm);
+
+/**
+ * @brief Copy the height of the most recent hump, whatever its height.
+ *
+ * @param[out] p_height_mm Destination, must not be NULL. 0 before the
+ *                         first hump.
+ *
+ * @return CAR_OK, or CAR_ERR_RANGE if p_height_mm is NULL.
+ */
+car_status_t imu_get_last_hump (uint16_t * p_height_mm);
+
+/**
+ * @brief Report how many humps the car has crossed this run.
+ *
+ * @param[out] p_count Destination, must not be NULL.
+ *
+ * @return CAR_OK, or CAR_ERR_RANGE if p_count is NULL.
+ */
+car_status_t imu_get_hump_count (uint16_t * p_count);
 
 /**
  * @brief Report whether an impact was seen since the last imu_update().
@@ -236,14 +255,14 @@ bool imu_is_terrain_stable (void);
  * @param[in] ax_mg X acceleration, forward axis.
  * @param[in] ay_mg Y acceleration.
  * @param[in] az_mg Z acceleration, 1000 when level and still.
- * @param[in] mx    Magnetometer X, raw counts.
- * @param[in] my    Magnetometer Y, raw counts.
- * @param[in] mz    Magnetometer Z, raw counts.
+ * @param[in] mag_x    Magnetometer X, raw counts.
+ * @param[in] mag_y    Magnetometer Y, raw counts.
+ * @param[in] mag_z    Magnetometer Z, raw counts.
  */
 void imu_host_inject (int16_t ax_mg, int16_t ay_mg, int16_t az_mg,
-                      int16_t mx, int16_t my, int16_t mz);
+                      int16_t mag_x, int16_t mag_y, int16_t mag_z);
 #endif
 
-#endif /* IMU_TERRAIN_H */
+#endif /* IMU_H */
 
 /*** end of file ***/

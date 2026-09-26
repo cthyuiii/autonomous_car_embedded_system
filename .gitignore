@@ -1,5 +1,6 @@
 agentic-orchestration-prompt.md
 fable-prompt.md
+firmware/barr_check.py
 
 # Prerequisites
 *.d
@@ -81,3 +82,5 @@ firmware/config/tcp_test_config.h
 # Python
 __pycache__/
 *.pyc
+
+*.pdf

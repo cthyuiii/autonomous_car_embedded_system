@@ -1,11 +1,11 @@
-/** @file line_barcode.h
+/** @file line.h
  *
  * @brief Two sensor IR line following, junction detection and barcodes.
  *
  * NOTE on the sensors: three MH-Sensor-Series modules, each an IR pair with
  * an LM393 comparator and a trimpot, so the output is a digital level.
  * Left and right straddle the line and give the position; the third sits
- * off to the right and only reads barcodes. LINE_SENSOR_DARK_LEVEL in
+ * off to the left and only reads barcodes. LINE_SENSOR_DARK_LEVEL in
  * car_config.h names the level the module outputs over the black line.
  * The analog path in earlier drafts is gone: on this port layout only one
  * sensor sits on an ADC capable pin.
@@ -18,24 +18,31 @@
  * it does not depend on the driving speed. It also tries the sequence
  * reversed, because the car may cross the symbol from either end.
  *
- * NOTE on timing: sampling at LINE_SAMPLE_PERIOD_MSEC must catch every
- * transition, so the narrowest bar has to outlast one sample period. At
- * 3 mm and 10 ms that caps reading speed near 300 mm per second; the
- * controller slows to CAR_BARCODE_SPEED_MM_PER_SEC while a symbol may be
- * underneath.
+ * NOTE on timing: the line task runs every 10 ms, far too slow for a 3 mm
+ * bar at driving speed, so the barcode sensor is not read there. A timer
+ * alarm interrupt samples it every BARCODE_SAMPLE_USEC and timestamps each
+ * change; line_poll_barcode() only decodes what was recorded. The symbol sits
+ * beside the line, on the left, under the barcode sensor alone.
  *
  * Owner: Buddy 3, barcode decoding and IR line following. A changed signature
  * here also changes the test, the bench and car_main.c, so agree it with the
  * team first.
  */
 
-#ifndef LINE_BARCODE_H
-#define LINE_BARCODE_H
+#ifndef LINE_H
+#define LINE_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "car_types.h"
+#include "car.h"
+
+/* Sensor mask bits, as line_get_sensor_mask() reports them. */
+#define LINE_BIT_LEFT            0x01u
+#define LINE_BIT_BARCODE         0x02u
+#define LINE_BIT_RIGHT           0x04u
+#define LINE_BIT_ALL             0x07u
+#define LINE_BITS_LINE           (LINE_BIT_LEFT | LINE_BIT_RIGHT)
 
 /**
  * @brief Configure the three sensor pins as inputs, digital or ADC.
@@ -45,17 +52,22 @@
 car_status_t line_init (void);
 
 /**
- * @brief Record the sensor reading on both surfaces.
+ * @brief Check every sensor reads floor, steadily, at the start.
  *
- * Call with the car held over the black line, then again over the light
- * track. Each call samples all three sensors and stores min and max, so the
- * threshold sits between them regardless of ambient light.
+ * Call once at start-up with the car in its starting place: the line
+ * between the left and right sensors, the barcode sensor over floor. Takes
+ * LINE_CALIBRATE_SAMPLES readings and checks every sensor read floor in
+ * all of them. Afterwards line_get_sensor_mask() holds the sensors that
+ * read dark in any sample.
  *
  * NOTE: With digital modules the threshold lives in each module's trimpot,
- * so this only takes a reading and reports success. Set the trimpots on the
- * bench with the module's own indicator LED.
+ * so software cannot move it. A sensor dark throughout means the car is
+ * misplaced or LINE_SENSOR_DARK_LEVEL is wrong for it; one that flickers
+ * has its trimpot on the edge of the floor's reflectance, so the first
+ * shadow or lighting change would flip it. Set the trimpot until the
+ * module's LED is steady over floor and lights on the line.
  *
- * @return CAR_OK, or CAR_ERR_RANGE if the two surfaces are not separable.
+ * @return CAR_OK, or CAR_ERR_RANGE if any sensor did not read floor.
  */
 car_status_t line_calibrate (void);
 
@@ -134,16 +146,17 @@ car_status_t line_get_health (uint8_t * p_working_mask);
 bool line_is_at_junction (void);
 
 /**
- * @brief Advance the barcode decoder by one sample.
+ * @brief Decode the bar and space edges recorded since the last call.
  *
- * Call once per LINE_SAMPLE_PERIOD_MSEC while following the line.
+ * Call once per LINE_SAMPLE_PERIOD_MSEC. Edges after a decoded symbol wait
+ * for the next call.
  *
  * @param[out] p_command Decoded command, written only on CAR_OK.
  *
  * @return CAR_OK once a complete symbol has been decoded, CAR_ERR_NO_DATA
  *         while still accumulating bars, CAR_ERR_RANGE if p_command is NULL.
  */
-car_status_t barcode_poll (car_nav_command_t * p_command);
+car_status_t line_poll_barcode (car_nav_command_t * p_command);
 
 #ifdef CAR_HOST_TEST
 /**
@@ -155,6 +168,6 @@ car_status_t barcode_poll (car_nav_command_t * p_command);
 void line_host_inject (uint8_t mask, uint32_t now_usec);
 #endif
 
-#endif /* LINE_BARCODE_H */
+#endif /* LINE_H */
 
 /*** end of file ***/

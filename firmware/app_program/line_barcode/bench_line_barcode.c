@@ -29,16 +29,18 @@
 
 #include "car_config.h"
 #include "car_log.h"
-#include "line_barcode.h"
+#include "car_time.h"
+#include "line.h"
 
 #define BENCH_STARTUP_MSEC 2000u
-#define BENCH_PRINT_EVERY    10u
+#define BENCH_PRINT_EVERY    20u
 #define BENCH_LEFT_BIT     0x01u
 #define BENCH_BARCODE_BIT  0x02u
 #define BENCH_RIGHT_BIT    0x04u
+#define BENCH_SENSORS         3u
 
 static uint8_t  g_last_raw   = 0u;
-static uint32_t g_changes[3] = { 0u, 0u, 0u };
+static uint32_t g_changes[BENCH_SENSORS] = { 0u, 0u, 0u };
 
 static char health_letter (uint8_t health, uint8_t bit, char letter);
 
@@ -47,6 +49,7 @@ INT usermain (void)
     uint32_t sample_count = 0u;
 
     (void)tk_dly_tsk(BENCH_STARTUP_MSEC);
+    (void)car_time_start_ticks();
     CAR_LOG(CAR_LOG_INFO, "line bench: pins L%u B%u R%u, dark is %u\n",
             LINE_SENSOR_LEFT_PIN, LINE_SENSOR_BARCODE_PIN,
             LINE_SENSOR_RIGHT_PIN, LINE_SENSOR_DARK_LEVEL);
@@ -81,8 +84,9 @@ INT usermain (void)
         {
             uint8_t bit = 0u;
 
-            for (bit = 0u; bit < 3u; bit++)
+            for (bit = 0u; bit < BENCH_SENSORS; bit++)
             {
+                /* Cast: both are three bit masks. */
                 if (0u != (((uint8_t)(raw ^ g_last_raw) >> bit) & 1u))
                 {
                     g_changes[bit]++;
@@ -92,15 +96,15 @@ INT usermain (void)
             g_last_raw = raw;
         }
 
-        if (CAR_OK == barcode_poll(&command))
+        if (CAR_OK == line_poll_barcode(&command))
         {
             CAR_LOG(CAR_LOG_INFO, "barcode command %d\n", command);
         }
 
         if (0u == (sample_count % BENCH_PRINT_EVERY))
         {
-            /* Mask printed right to left so it reads as the car sees the
-             * track: right sensor first, then barcode, then left. */
+            /* Mask printed from bit 2 down: right sensor first, then
+             * barcode, then left. */
             CAR_LOG(CAR_LOG_INFO,
                     "mask %u%u%u  raw %u%u%u  health %c%c%c  changes "
                     "%u/%u/%u  error %d  junction %d\n",
@@ -114,7 +118,7 @@ INT usermain (void)
         }
 
         sample_count++;
-        (void)tk_dly_tsk(LINE_SAMPLE_PERIOD_MSEC);
+        car_time_wait_tick();
     }
 }
 
@@ -133,7 +137,7 @@ static char health_letter (uint8_t health, uint8_t bit, char letter)
 
     if (0u != (health & bit))
     {
-        shown = (char)(letter - ('a' - 'A'));
+        shown = (char)(letter - ('a' - 'A'));   /* a to z becomes A to Z */
     }
 
     return shown;

@@ -4,25 +4,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* MQTT client phase for the NO_SYS lwIP owner task.
+/** @file lwip_utk_mqtt.h
  *
- * lwIP and this client run only on the radio-owner task.  Application tasks
+ * @brief MQTT client phase for the NO_SYS lwIP owner task.
+ *
+ * lwIP and this client run only on the radio owner task. Application tasks
  * never call lwIP; they hand messages across two small rings guarded by the
  * port's spinlock, and the owner task drains them from lwip_utk_mqtt_poll().
- * Received publishes travel the other way through the second ring. */
+ * Received publishes travel the other way through the second ring.
+ */
 
 #ifndef LWIP_UTK_MQTT_H
 #define LWIP_UTK_MQTT_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
-#define LWIP_UTK_MQTT_HOST_LEN      16U   /* dotted quad plus terminator */
-#define LWIP_UTK_MQTT_ID_LEN        24U
-#define LWIP_UTK_MQTT_TOPIC_LEN     32U
-#define LWIP_UTK_MQTT_TX_PAYLOAD   256U
-#define LWIP_UTK_MQTT_RX_PAYLOAD    64U
-#define LWIP_UTK_MQTT_TX_SLOTS       4U
-#define LWIP_UTK_MQTT_RX_SLOTS       4U
+#define LWIP_UTK_MQTT_HOST_LEN      16u   /* Dotted quad plus terminator */
+#define LWIP_UTK_MQTT_ID_LEN        24u
+#define LWIP_UTK_MQTT_TOPIC_LEN     32u
+#define LWIP_UTK_MQTT_TX_PAYLOAD   480u   /* COMMS_PAYLOAD_MAX_BYTES */
+#define LWIP_UTK_MQTT_RX_PAYLOAD    64u
+#define LWIP_UTK_MQTT_TX_SLOTS       4u
+#define LWIP_UTK_MQTT_RX_SLOTS       4u
 
 /* lwip_utk_mqtt_publish() results. */
 #define LWIP_UTK_MQTT_QUEUED         0
@@ -32,44 +36,84 @@
 
 struct netif;
 
-typedef struct {
-    char host[LWIP_UTK_MQTT_HOST_LEN];
+/** Broker and session settings, copied in by lwip_utk_mqtt_configure(). */
+typedef struct
+{
+    char     host[LWIP_UTK_MQTT_HOST_LEN];
     uint16_t port;
-    char client_id[LWIP_UTK_MQTT_ID_LEN];
-    char subscribe_topic[LWIP_UTK_MQTT_TOPIC_LEN];
+    char     client_id[LWIP_UTK_MQTT_ID_LEN];
+    char     subscribe_topic[LWIP_UTK_MQTT_TOPIC_LEN];
     uint16_t keepalive_seconds;
     uint32_t reconnect_ms;
-} T_LWIP_UTK_MQTT_CONFIG;
+} lwip_utk_mqtt_config_t;
 
-typedef struct {
-    uint32_t configured;
-    uint32_t connected;
-    uint32_t subscribed;
-    int32_t connect_result;
+/** What the client has done so far, for any task to read. */
+typedef struct
+{
+    bool     b_configured;
+    bool     b_connected;
+    bool     b_subscribed;
+    int32_t  connect_result;
     uint32_t connect_attempts;
     uint32_t published;
     uint32_t dropped;
     uint32_t received;
-} T_LWIP_UTK_MQTT_STATUS;
+} lwip_utk_mqtt_status_t;
 
-/* Any task, before the first poll.  A host that does not parse as a dotted
-   quad leaves the client unconfigured, visible in the status. */
-void lwip_utk_mqtt_configure(const T_LWIP_UTK_MQTT_CONFIG *config);
+/**
+ * @brief Set the broker and session. Any task, before the first poll.
+ *
+ * A host that does not parse as a dotted quad leaves the client
+ * unconfigured, which the status shows.
+ *
+ * @param[in] p_config Settings to copy.
+ */
+void lwip_utk_mqtt_configure (lwip_utk_mqtt_config_t const * p_config);
 
-/* Any task.  Copies the payload into a ring slot; the owner task sends it
-   on its next poll.  Returns one of the LWIP_UTK_MQTT_* results. */
-int32_t lwip_utk_mqtt_publish(const char *topic, const void *payload,
-                              uint16_t length);
+/**
+ * @brief Queue one publish. Any task.
+ *
+ * Copies the payload into a ring slot; the owner task sends it on its next
+ * poll.
+ *
+ * @param[in] p_topic   Topic, NUL terminated.
+ * @param[in] p_payload Payload bytes, may be NULL when length is 0.
+ * @param[in] length    Payload length.
+ *
+ * @return One of the LWIP_UTK_MQTT_* results.
+ */
+int32_t lwip_utk_mqtt_publish (char const * p_topic, void const * p_payload,
+                               uint16_t length);
 
-/* Any task.  Pops one received publish, oldest first.  Returns 1 when a
-   message was copied out, 0 when the ring is empty. */
-int32_t lwip_utk_mqtt_receive(char *topic, uint16_t topic_size, void *payload,
-                              uint16_t payload_size, uint16_t *length);
+/**
+ * @brief Pop one received publish, oldest first. Any task.
+ *
+ * @param[out] p_topic      Topic, truncated to topic_size.
+ * @param[in]  topic_size   Room at p_topic.
+ * @param[out] p_payload    Payload, truncated to payload_size.
+ * @param[in]  payload_size Room at p_payload.
+ * @param[out] p_length     Bytes copied to p_payload.
+ *
+ * @return 1 when a message was copied out, 0 when the ring is empty.
+ */
+int32_t lwip_utk_mqtt_receive (char * p_topic, uint16_t topic_size,
+                               void * p_payload, uint16_t payload_size,
+                               uint16_t * p_length);
 
-/* Owner task only. */
-void lwip_utk_mqtt_poll(struct netif *netif);
+/**
+ * @brief Connect, reconnect and send what is queued. Owner task only.
+ *
+ * @param[in] p_netif The station interface.
+ */
+void lwip_utk_mqtt_poll (struct netif * p_netif);
 
-/* Any task. */
-void lwip_utk_mqtt_get_status(T_LWIP_UTK_MQTT_STATUS *status);
+/**
+ * @brief Copy out the client's status. Any task.
+ *
+ * @param[out] p_status Where to copy it.
+ */
+void lwip_utk_mqtt_get_status (lwip_utk_mqtt_status_t * p_status);
 
-#endif
+#endif /* LWIP_UTK_MQTT_H */
+
+/*** end of file ***/

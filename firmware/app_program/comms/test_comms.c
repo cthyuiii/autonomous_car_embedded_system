@@ -50,7 +50,22 @@ int main (void)
     assert(CAR_OK == comms_poll());
     assert(2u == g_calls);
 
-    /* A full snapshot still fits the payload buffer. */
+    /* A full snapshot, every field at its widest and the longest action
+     * name, still fits the payload buffer, so it fits an MQTT slot. */
+    telemetry.mission_state                = CAR_STATE_COLLISION;
+    telemetry.action                       = CAR_ACTION_BACKING_OFF;
+    telemetry.speed_mm_per_sec             = 65535u;
+    telemetry.line_sensor_mask             = 255u;
+    telemetry.last_nav_command             = CAR_NAV_UTURN;
+    telemetry.peak_hump_height_mm          = 65535u;
+    telemetry.pitch_deg                    = -32768;
+    telemetry.heading_deg                  = -32768;
+    telemetry.turn_rate_dps                = -32768;
+    telemetry.motion_event                 = CAR_MOTION_DESCENDING;
+    telemetry.terrain_rough_milli_g        = 65535u;
+    telemetry.accel_milli_g                = 65535u;
+    telemetry.hump_count                   = 65535u;
+    telemetry.last_hump_height_mm          = 65535u;
     telemetry.encoder_count_left           = 4294967295u;
     telemetry.encoder_count_right          = 4294967295u;
     telemetry.total_distance_mm            = 4294967295u;
@@ -61,6 +76,8 @@ int main (void)
     telemetry.last_obstacle.clearance_left_mm  = 65535u;
     telemetry.last_obstacle.clearance_right_mm = 65535u;
     assert(CAR_OK == comms_publish_telemetry(&telemetry));
+    assert(CAR_OK == comms_publish_terrain(&telemetry));
+    assert(CAR_ERR_RANGE == comms_publish_terrain(NULL));
 
     return 0;
 }

@@ -6,14 +6,14 @@
  * horn does not move and you need to know whether the fault is the servo,
  * the wiring, the power, or the firmware.
  *
- * It deliberately does not call scanning.c at all. It talks straight to the
+ * It deliberately does not call scan.c at all. It talks straight to the
  * PWM block through car_hw, so the only code between this file and the pin
  * is the kernel's own PWM helper. If the horn moves here but not in the
- * scanning bench, the fault is in scanning.c. If it moves in neither, the
+ * scanning bench, the fault is in scan.c. If it moves in neither, the
  * fault is outside the firmware.
  *
  * WARNING: This sweeps only between SCAN_MIN_ANGLE_DEG and
- * SCAN_MAX_ANGLE_DEG, the same band scanning.c clamps to, because the horn
+ * SCAN_MAX_ANGLE_DEG, the same band scan.c clamps to, because the horn
  * on this car has very little room. Widen SCAN_HALF_SWEEP_DEG in
  * car_config.h rather than editing the pulse widths here, so the bench and
  * the car can never disagree about how far the horn may travel.
@@ -70,7 +70,7 @@
 #define BENCH_OFF_HOLD_MSEC    2000u
 
 /* One microsecond per count, so a compare value is a pulse width and the
- * wrap is the servo frame. Same numbers scanning.c uses. */
+ * wrap is the servo frame. Same numbers scan.c uses. */
 #define BENCH_CLOCK_DIVIDER     125u
 #define BENCH_FRAME_USEC        (1000000u / SERVO_PWM_FREQ_HZ)
 
@@ -129,7 +129,7 @@ INT usermain (void)
 }
 
 /**
- * @brief Pulse width for an angle, the same mapping scanning.c uses.
+ * @brief Pulse width for an angle, the same mapping scan.c uses.
  *
  * Measured from the mounted centre, so an angle is an offset from where
  * the horn already rests rather than a fraction of a 0 to 180 range.
@@ -140,10 +140,12 @@ INT usermain (void)
  */
 static uint16_t pulse_for (uint16_t angle_deg)
 {
+    /* Casts: angles and pulse widths are under 3000, exact as int32_t. */
     int32_t offset = (int32_t)angle_deg - (int32_t)SCAN_CENTRE_ANGLE_DEG;
     int32_t pulse  = (int32_t)SERVO_CENTRE_PULSE_USEC
                      + (offset * (int32_t)SERVO_USEC_PER_DEG);
 
+    /* Casts: the pulse limits are constants under 3000. */
     if (pulse < (int32_t)SERVO_PULSE_MIN_USEC)
     {
         pulse = (int32_t)SERVO_PULSE_MIN_USEC;
@@ -157,7 +159,7 @@ static uint16_t pulse_for (uint16_t angle_deg)
         /* Inside the servo's accepted range. */
     }
 
-    return (uint16_t)pulse;
+    return (uint16_t)pulse;   /* Clamped to the servo's range above */
 }
 
 #if BENCH_FIND_CENTRE
@@ -229,7 +231,7 @@ static void sweep (uint16_t from_deg, uint16_t to_deg, char const * p_what)
                 break;
             }
 
-            angle_deg = (uint16_t)(angle_deg + BENCH_STEP_DEG);
+            angle_deg = (uint16_t)(angle_deg + BENCH_STEP_DEG); /* <180 */
         }
         else
         {
@@ -238,7 +240,7 @@ static void sweep (uint16_t from_deg, uint16_t to_deg, char const * p_what)
                 break;
             }
 
-            angle_deg = (uint16_t)(angle_deg - BENCH_STEP_DEG);
+            angle_deg = (uint16_t)(angle_deg - BENCH_STEP_DEG); /* >0 */
         }
     }
 

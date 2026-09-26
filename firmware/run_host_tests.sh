@@ -17,11 +17,15 @@ FLAGS="-std=c99 -Wall -Wextra -Wconversion -DCAR_HOST_TEST"
 APP=app_program
 fail=0
 
-for name in comms motion line_barcode imu_terrain scanning; do
+# Folder, then the module inside it, named for its API prefix (Barr C 6.1.i).
+for pair in comms:comms motion:motion line_barcode:line imu_terrain:imu \
+            scanning:scan; do
+    name="${pair%%:*}"
+    module="${pair#*:}"
     bin="build_host/test_$name"
     if $CC $FLAGS -I "$APP/common" -I "$APP/$name/include" \
-        "$APP/$name/$name.c" "$APP/$name/test_$name.c" -o "$bin" \
-        && "./$bin" 2>/dev/null; then
+        "$APP/$name/$module.c" "$APP/$name/test_$name.c" -o "$bin" \
+        && "./$bin" >/dev/null 2>&1; then
         echo "PASS  $name"
     else
         echo "FAIL  $name"

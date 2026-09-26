@@ -2,8 +2,8 @@
  *
  * @brief One logging entry point so the console path lives in one place.
  *
- * NOTE: This is a macro, which the coding standard normally forbids, because
- * the kernel console tm_printf() has no va_list entry point to forward to. A
+ * NOTE: Barr C deviation 6.3.a: this is a parameterized macro, because the
+ * kernel console tm_printf() has no va_list entry point to forward to. A
  * function would have to format into a fixed buffer first, and a fixed
  * buffer is a truncation bug waiting to happen. The level test is a compile
  * time constant, so a disabled level costs nothing.
@@ -24,6 +24,7 @@ typedef enum
     CAR_LOG_DEBUG
 } car_log_level_t;
 
+/* Barr C deviation 6.3.a for CAR_LOG_PRINT and CAR_LOG, see the NOTE. */
 #ifdef CAR_HOST_TEST
 #include <stdio.h>
 #define CAR_LOG_PRINT(...) printf(__VA_ARGS__)
@@ -35,6 +36,7 @@ typedef enum
 
 /**
  * @brief Print a formatted line if level is at or below CAR_LOG_LEVEL.
+ *        Barr C deviation 6.3.a, see the NOTE at the top.
  *
  * @param[in] level Severity, a car_log_level_t.
  * @param[in] ...   printf style format string and its arguments.

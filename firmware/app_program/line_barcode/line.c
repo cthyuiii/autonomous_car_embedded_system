@@ -1,4 +1,4 @@
-/** @file line_barcode.c
+/** @file line.c
  *
  * @brief IR line position, junctions and Code 39 barcode decoding.
  *
@@ -7,19 +7,20 @@
  * tries to read the last 29 elements as start, character, stop. Only a
  * correctly aligned symbol passes both asterisk checks, so no separate
  * quiet zone detection is needed; a run longer than
- * BARCODE_MAX_ELEMENT_MSEC simply empties the register.
+ * BARCODE_MAX_ELEMENT_MSEC simply empties the register. The widths come
+ * from a timer interrupt that samples the barcode sensor every
+ * BARCODE_SAMPLE_USEC, not from the 10 ms line task.
  *
- * Owner: Buddy 3, barcode decoding and IR line following. Implement the TODOs
- * in this file. It is yours.
+ * Owner: Buddy 3, barcode decoding and IR line following. This file is
+ * yours.
  */
 
-#include "line_barcode.h"
+#include "line.h"
 
 #ifdef CAR_HOST_TEST
 #include <stddef.h>
 #else
 #include <tk/tkernel.h>
-#include <bsp/libbsp.h>
 #include "car_hw.h"
 #endif
 
@@ -34,17 +35,12 @@
 #endif
 #endif
 
-#define LINE_BIT_LEFT            0x01u
-#define LINE_BIT_BARCODE         0x02u
-#define LINE_BIT_RIGHT           0x04u
-#define LINE_BIT_ALL             0x07u
-#define LINE_BITS_LINE           (LINE_BIT_LEFT | LINE_BIT_RIGHT)
-
 /* Code 39: nine elements per character, three of them wide, and a symbol
  * of three characters with one gap between neighbours. */
 #define CODE39_GROUP             9u
 #define CODE39_WIDE_COUNT        3u
 #define CODE39_START_STOP        '*'
+#define CODE39_DIRECTIONS        2u      /* As read, then reversed */
 #define BARCODE_ELEMENTS         29u
 #define BARCODE_RUNS_MAX         32u
 #define BARCODE_TABLE_SIZE       44u
@@ -84,35 +80,40 @@ static uint8_t  g_raw_levels       = 0u;
 static uint8_t  g_seen_dark        = 0u;
 static uint8_t  g_seen_light       = 0u;
 static uint8_t  g_junction_samples = 0u;
-static bool     g_b_touched        = false;
+static bool     gb_touched         = false;
 static uint32_t g_touch_usec       = 0u;
 static run_t    g_runs[BARCODE_RUNS_MAX];
 static uint8_t  g_run_count        = 0u;
-static bool     g_run_started      = false;
-static bool     g_run_dark         = false;
+static bool     gb_run_started      = false;
+static bool     gb_run_dark         = false;
 static uint32_t g_run_start_usec   = 0u;
 
 static uint8_t           read_sensors (void);
 static uint8_t           sample_sensors (void);
 static uint32_t          clock_usec (void);
+static bool              next_edge (uint32_t * p_usec, bool * p_dark);
+static car_nav_command_t run_edge (uint32_t now, bool b_dark);
+static car_nav_command_t end_run (uint32_t width_usec, bool b_dark);
 static void              push_run (uint32_t width_usec, bool b_dark);
 static char              decode_symbol (run_t const * p_runs);
 static char              decode_group (uint32_t const * p_widths);
+static char              symbol_for (uint16_t pattern);
 static car_nav_command_t command_for (char symbol);
+#ifndef CAR_HOST_TEST
+static void              sampler_start (void);
+#endif
 
 car_status_t line_init (void)
 {
-    // TODO: If LINE_SENSOR_IS_ANALOG, tk_opn_dev() the kernel ADC device
-    //       (device/adc). Otherwise gpio_set_pin(GPIO_MODE_IN) all three.
     car_status_t status = CAR_ERR_HARDWARE;
 
     g_sensor_mask      = 0u;
     g_seen_dark        = 0u;
     g_seen_light       = 0u;
     g_junction_samples = 0u;
-    g_b_touched        = false;
+    gb_touched         = false;
     g_run_count        = 0u;
-    g_run_started      = false;
+    gb_run_started      = false;
 
 #if !LINE_SENSOR_IS_ANALOG
 #ifndef CAR_HOST_TEST
@@ -126,6 +127,7 @@ car_status_t line_init (void)
     car_hw_gpio_input_pulldown(LINE_SENSOR_BARCODE_PIN);
     car_hw_gpio_input_pulldown(LINE_SENSOR_RIGHT_PIN);
 #endif
+    sampler_start();
 #endif
     status = CAR_OK;
 #endif
@@ -135,11 +137,20 @@ car_status_t line_init (void)
 
 car_status_t line_calibrate (void)
 {
-    // TODO: Sample all three sensors, update stored min and max per sensor,
-    //       and set the threshold halfway between them.
-    g_sensor_mask = sample_sensors();
+    uint8_t dark   = 0u;
+    uint8_t sample = 0u;
 
-    return CAR_OK;
+    for (sample = 0u; sample < LINE_CALIBRATE_SAMPLES; sample++)
+    {
+        dark |= sample_sensors();
+#ifndef CAR_HOST_TEST
+        (void)tk_dly_tsk(LINE_SAMPLE_PERIOD_MSEC);
+#endif
+    }
+
+    g_sensor_mask = dark;
+
+    return (0u == dark) ? CAR_OK : CAR_ERR_RANGE;
 }
 
 car_status_t line_get_raw_levels (uint8_t * p_levels)
@@ -161,6 +172,7 @@ car_status_t line_get_health (uint8_t * p_working_mask)
 
     if (NULL != p_working_mask)
     {
+        /* Cast: masked to three bits. */
         *p_working_mask = (uint8_t)(g_seen_dark & g_seen_light & LINE_BIT_ALL);
         status          = CAR_OK;
     }
@@ -170,33 +182,32 @@ car_status_t line_get_health (uint8_t * p_working_mask)
 
 car_status_t line_get_position (int16_t * p_error)
 {
-    // TODO: Read the sensors into g_sensor_mask, then map the mask to a
-    //       signed step, or in analog mode compute a weighted centroid.
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_error)
     {
         uint8_t  mask = sample_sensors();
-        uint8_t  line = (uint8_t)(mask & LINE_BITS_LINE);
+        uint8_t  line = (uint8_t)(mask & LINE_BITS_LINE);   /* Two bits */
         uint32_t now  = clock_usec();
 
         g_sensor_mask = mask;
 
-        if (LINE_BITS_LINE == line)
+        if (LINE_BITS_LINE != line)
         {
-            if (g_junction_samples < LINE_JUNCTION_SAMPLES)
-            {
-                g_junction_samples++;
-            }
+            g_junction_samples = 0u;
+        }
+        else if (g_junction_samples < LINE_JUNCTION_SAMPLES)
+        {
+            g_junction_samples++;
         }
         else
         {
-            g_junction_samples = 0u;
+            /* Held at the limit while the junction lasts. */
         }
 
         if (0u != line)
         {
-            g_b_touched  = true;
+            gb_touched   = true;
             g_touch_usec = now;
         }
 
@@ -221,7 +232,7 @@ car_status_t line_get_position (int16_t * p_error)
             default:
                 /* Neither dark: centred if one of them saw the line lately,
                  * otherwise it is gone. */
-                if (g_b_touched && ((now - g_touch_usec)
+                if (gb_touched && ((now - g_touch_usec)
                                     < (LINE_CENTRED_HOLD_MSEC * 1000u)))
                 {
                     *p_error = 0;
@@ -239,7 +250,6 @@ car_status_t line_get_position (int16_t * p_error)
 
 car_status_t line_get_sensor_mask (uint8_t * p_mask)
 {
-    // TODO: Return CAR_OK once line_get_position() refreshes the mask.
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_mask)
@@ -253,76 +263,108 @@ car_status_t line_get_sensor_mask (uint8_t * p_mask)
 
 bool line_is_at_junction (void)
 {
-    // TODO: True when both line sensors are dark for longer than one
-    //       sample, to reject a single noisy reading.
     return (g_junction_samples >= LINE_JUNCTION_SAMPLES);
 }
 
-car_status_t barcode_poll (car_nav_command_t * p_command)
+car_status_t line_poll_barcode (car_nav_command_t * p_command)
 {
-    // TODO: Time each dark and light run in samples, classify each as
-    //       narrow or wide, accumulate into a symbol, and map the
-    //       finished symbol to a car_nav_command_t.
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_command)
     {
-        uint32_t now    = clock_usec();
-        bool     b_dark = (0u != (sample_sensors() & LINE_BIT_BARCODE));
+        uint32_t usec   = 0u;
+        bool     b_dark = false;
 
         status = CAR_ERR_NO_DATA;
 
-        if (!g_run_started)
+        /* Stop at the first symbol; later edges wait for the next poll. */
+        while ((CAR_ERR_NO_DATA == status) && (next_edge(&usec, &b_dark)))
         {
-            g_run_started    = true;
-            g_run_dark       = b_dark;
-            g_run_start_usec = now;
-        }
-        else if (b_dark != g_run_dark)
-        {
-            uint32_t width     = now - g_run_start_usec;
-            bool     b_was_dark = g_run_dark;
+            car_nav_command_t command = run_edge(usec, b_dark);
 
-            g_run_dark       = b_dark;
-            g_run_start_usec = now;
-
-            if (width > (BARCODE_MAX_ELEMENT_MSEC * 1000u))
+            if (CAR_NAV_NONE != command)
             {
-                /* Far too long for a bar or a gap: the line itself, or open
-                 * floor. Whatever came before it cannot be part of a symbol. */
-                g_run_count = 0u;
+                *p_command = command;
+                status     = CAR_OK;
             }
-            else
-            {
-                push_run(width, b_was_dark);
-
-                if (b_was_dark && (g_run_count >= BARCODE_ELEMENTS))
-                {
-                    char symbol = decode_symbol(
-                        &g_runs[g_run_count - BARCODE_ELEMENTS]);
-
-                    if ('\0' != symbol)
-                    {
-                        car_nav_command_t command = command_for(symbol);
-
-                        g_run_count = 0u;
-
-                        if (CAR_NAV_NONE != command)
-                        {
-                            *p_command = command;
-                            status     = CAR_OK;
-                        }
-                    }
-                }
-            }
-        }
-        else
-        {
-            /* Same level as before: the current run just grows. */
         }
     }
 
     return status;
+}
+
+/**
+ * @brief Time the bar or space that one barcode sensor edge just ended.
+ *
+ * @param[in] now    Microsecond time of the edge.
+ * @param[in] b_dark Level after the edge.
+ *
+ * @return The command of the symbol this edge completed, else CAR_NAV_NONE.
+ */
+static car_nav_command_t run_edge (uint32_t now, bool b_dark)
+{
+    car_nav_command_t command = CAR_NAV_NONE;
+
+    if (!gb_run_started)
+    {
+        gb_run_started    = true;
+        gb_run_dark       = b_dark;
+        g_run_start_usec = now;
+    }
+    else if (b_dark != gb_run_dark)
+    {
+        uint32_t width      = now - g_run_start_usec;
+        bool     b_was_dark = gb_run_dark;
+
+        gb_run_dark      = b_dark;
+        g_run_start_usec = now;
+        command          = end_run(width, b_was_dark);
+    }
+    else
+    {
+        /* Same level as before: the current run just grows. */
+    }
+
+    return command;
+}
+
+/**
+ * @brief Take in one finished bar or space and decode if it ends a symbol.
+ *
+ * @param[in] width_usec How long it lasted.
+ * @param[in] b_dark     true for a bar.
+ *
+ * @return The command of the symbol it completed, else CAR_NAV_NONE.
+ */
+static car_nav_command_t end_run (uint32_t width_usec, bool b_dark)
+{
+    car_nav_command_t command = CAR_NAV_NONE;
+    char              symbol  = '\0';
+
+    if (width_usec > (BARCODE_MAX_ELEMENT_MSEC * 1000u))
+    {
+        /* Far too long for a bar or a gap: open floor beside the line.
+         * Whatever came before it cannot be part of a symbol. */
+        g_run_count = 0u;
+    }
+    else
+    {
+        push_run(width_usec, b_dark);
+
+        /* A symbol begins and ends with a bar, so only a bar ends one. */
+        if (b_dark && (g_run_count >= BARCODE_ELEMENTS))
+        {
+            symbol = decode_symbol(&g_runs[g_run_count - BARCODE_ELEMENTS]);
+        }
+    }
+
+    if ('\0' != symbol)
+    {
+        command     = command_for(symbol);
+        g_run_count = 0u;
+    }
+
+    return command;
 }
 
 /**
@@ -343,6 +385,7 @@ static uint8_t sample_sensors (void)
 #endif
 
     g_seen_dark  |= mask;
+    /* Casts: widening before the complement, then masked to three bits. */
     g_seen_light |= (uint8_t)(LINE_BIT_ALL & ~(uint32_t)mask);
 
     return mask;
@@ -395,7 +438,8 @@ static char decode_symbol (run_t const * p_runs)
     {
         uint8_t attempt = 0u;
 
-        for (attempt = 0u; (attempt < 2u) && ('\0' == symbol); attempt++)
+        for (attempt = 0u; (attempt < CODE39_DIRECTIONS) && ('\0' == symbol);
+             attempt++)
         {
             char start = decode_group(&widths[0]);
             char data  = decode_group(&widths[CODE39_GROUP + 1u]);
@@ -481,13 +525,30 @@ static char decode_group (uint32_t const * p_widths)
 
         if (CODE39_WIDE_COUNT == wide)
         {
-            for (index = 0u; index < BARCODE_TABLE_SIZE; index++)
-            {
-                if (g_code39[index].pattern == pattern)
-                {
-                    symbol = g_code39[index].symbol;
-                }
-            }
+            symbol = symbol_for(pattern);
+        }
+    }
+
+    return symbol;
+}
+
+/**
+ * @brief Look a pattern of wide elements up in the Code 39 table.
+ *
+ * @param[in] pattern Nine bits, the first element in bit 8.
+ *
+ * @return The character, or '\0' if no character has that pattern.
+ */
+static char symbol_for (uint16_t pattern)
+{
+    char    symbol = '\0';
+    uint8_t index  = 0u;
+
+    for (index = 0u; index < BARCODE_TABLE_SIZE; index++)
+    {
+        if (g_code39[index].pattern == pattern)
+        {
+            symbol = g_code39[index].symbol;
         }
     }
 
@@ -552,7 +613,37 @@ static uint32_t clock_usec (void)
     return g_host_usec;
 }
 
+/**
+ * @brief Host stand in for the sampler: one sample per poll, reported as
+ *        an edge only when it differs from the run being timed.
+ */
+static bool next_edge (uint32_t * p_usec, bool * p_dark)
+{
+    *p_usec = clock_usec();
+    *p_dark = (0u != (sample_sensors() & LINE_BIT_BARCODE));
+
+    return ((!gb_run_started) || (*p_dark != gb_run_dark));
+}
+
 #else /* CAR_HOST_TEST */
+
+/* The barcode sampler runs on RP2040 timer alarm 0, datasheet section 4.6.
+ * The kernel's tick is SysTick, so the timer alarms are free. */
+#define BARCODE_TIMER_IRQ        0u      /* TIMER_IRQ_0 */
+#define BARCODE_TIMER_IRQ_LEVEL  2       /* Same level as the encoders */
+#define BARCODE_ALARM            0u      /* Raises TIMER_IRQ_0 */
+#define BARCODE_EDGES            32u     /* Changes held between polls */
+
+/* Ring of timestamped level changes: the interrupt writes the head, the
+ * line task reads the tail, so neither needs a lock. */
+static volatile uint32_t g_edge_usec[BARCODE_EDGES];
+static volatile bool     gb_edge_dark[BARCODE_EDGES];
+static volatile uint8_t  g_edge_head = 0u;
+static volatile uint8_t  g_edge_tail = 0u;
+static volatile bool     gb_isr_dark  = false;
+
+static void barcode_sample_isr (UINT intno);
+static bool is_dark (uint32_t pin);
 
 /**
  * @brief Sample the three digital sensors into one mask.
@@ -563,17 +654,17 @@ static uint8_t read_sensors (void)
 {
     uint8_t mask = 0u;
 
-    if (LINE_SENSOR_DARK_LEVEL == gpio_get_val(LINE_SENSOR_LEFT_PIN))
+    if (is_dark(LINE_SENSOR_LEFT_PIN))
     {
         mask |= LINE_BIT_LEFT;
     }
 
-    if (LINE_SENSOR_DARK_LEVEL == gpio_get_val(LINE_SENSOR_BARCODE_PIN))
+    if (is_dark(LINE_SENSOR_BARCODE_PIN))
     {
         mask |= LINE_BIT_BARCODE;
     }
 
-    if (LINE_SENSOR_DARK_LEVEL == gpio_get_val(LINE_SENSOR_RIGHT_PIN))
+    if (is_dark(LINE_SENSOR_RIGHT_PIN))
     {
         mask |= LINE_BIT_RIGHT;
     }
@@ -581,9 +672,94 @@ static uint8_t read_sensors (void)
     return mask;
 }
 
+/**
+ * @brief Whether one sensor sees the line, whichever way round its output
+ *        is wired.
+ *
+ * @param[in] pin The sensor's GPIO.
+ *
+ * @return true over dark.
+ */
+static bool is_dark (uint32_t pin)
+{
+    return ((0u != LINE_SENSOR_DARK_LEVEL) == car_hw_gpio_get(pin));
+}
+
 static uint32_t clock_usec (void)
 {
     return car_hw_usec();
+}
+
+/**
+ * @brief Start sampling the barcode sensor every BARCODE_SAMPLE_USEC.
+ *
+ * NOTE: If the interrupt cannot be registered no barcode ever decodes,
+ * but line following is untouched, so line_init() still succeeds.
+ */
+static void sampler_start (void)
+{
+    T_DINT dint =
+    {
+        .intatr = TA_HLNG,
+        .inthdr = barcode_sample_isr,
+    };
+
+    g_edge_head = 0u;
+    g_edge_tail = 0u;
+
+    if (E_OK == tk_def_int(BARCODE_TIMER_IRQ, &dint))
+    {
+        car_hw_alarm_start(BARCODE_ALARM, BARCODE_SAMPLE_USEC);
+        ClearInt(BARCODE_TIMER_IRQ);
+        EnableInt(BARCODE_TIMER_IRQ, BARCODE_TIMER_IRQ_LEVEL);
+    }
+}
+
+/**
+ * @brief Read the barcode sensor, record a change, and re-arm the alarm.
+ *
+ * @param[in] intno Interrupt number the kernel dispatched.
+ */
+static void barcode_sample_isr (UINT intno)
+{
+    uint32_t now    = car_hw_usec();
+    bool     b_dark = is_dark(LINE_SENSOR_BARCODE_PIN);
+    uint8_t  next   = (uint8_t)((g_edge_head + 1u) % BARCODE_EDGES); /* <32 */
+
+    car_hw_alarm_rearm(BARCODE_ALARM, BARCODE_SAMPLE_USEC);
+
+    /* A full ring holds the change back until the task catches up. */
+    if ((b_dark != gb_isr_dark) && (next != g_edge_tail))
+    {
+        g_edge_usec[g_edge_head]  = now;
+        gb_edge_dark[g_edge_head] = b_dark;
+        g_edge_head               = next;
+        gb_isr_dark               = b_dark;
+    }
+
+    ClearInt(intno);
+}
+
+/**
+ * @brief Take the oldest change the sampler recorded.
+ *
+ * @param[out] p_usec Time of the change.
+ * @param[out] p_dark Level after it.
+ *
+ * @return true if there was one.
+ */
+static bool next_edge (uint32_t * p_usec, bool * p_dark)
+{
+    bool b_edge = (g_edge_tail != g_edge_head);
+
+    if (b_edge)
+    {
+        *p_usec     = g_edge_usec[g_edge_tail];
+        *p_dark     = gb_edge_dark[g_edge_tail];
+        g_edge_tail = (uint8_t)((g_edge_tail + 1u) % BARCODE_EDGES);
+    }
+
+    return b_edge;
 }
 
 #endif /* CAR_HOST_TEST */

@@ -1,4 +1,4 @@
-/** @file car_types.h
+/** @file car.h
  *
  * @brief Every type that crosses a subsystem boundary.
  *
@@ -9,8 +9,8 @@
  * depends on it.
  */
 
-#ifndef CAR_TYPES_H
-#define CAR_TYPES_H
+#ifndef CAR_H
+#define CAR_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -73,13 +73,27 @@ typedef enum
     CAR_STATE_COLLISION
 } car_mission_state_t;
 
-/** One hump measurement. Height is estimated, not measured directly. */
-typedef struct
+/** What the car is doing right now, published as text over MQTT.
+ *  Appended to only, like car_mission_state_t. */
+typedef enum
 {
-    uint16_t peak_height_mm;
-    uint32_t timestamp_msec;
-    bool     b_is_run_peak;
-} car_hump_t;
+    CAR_ACTION_STARTING = 0,
+    CAR_ACTION_FOLLOWING,
+    CAR_ACTION_ACQUIRING,           /* Turning back onto the line */
+    CAR_ACTION_LINE_LOST,
+    CAR_ACTION_READING_BARCODE,
+    CAR_ACTION_AT_JUNCTION,         /* Stopped, waiting for a command */
+    CAR_ACTION_TURNING_LEFT,
+    CAR_ACTION_TURNING_RIGHT,
+    CAR_ACTION_U_TURN,
+    CAR_ACTION_SCANNING,            /* Profiling an obstacle */
+    CAR_ACTION_DETOUR,              /* Driving the box round it */
+    CAR_ACTION_REVERSING,           /* Backing off to probe a lane */
+    CAR_ACTION_BACKING_OUT,         /* Undoing legs of a blocked lane */
+    CAR_ACTION_SEARCHING,           /* Searching for the line */
+    CAR_ACTION_BACKING_OFF,         /* After a hit or a stall */
+    CAR_ACTION_HALTED
+} car_action_t;
 
 /** Result of an ultrasonic scan, all distances in mm from the sensor. */
 typedef struct
@@ -114,9 +128,15 @@ typedef struct
     bool                   b_collision;
     bool                   b_terrain_stable;
     uint16_t               terrain_rough_milli_g;
+    /* Appended for the action and terrain messages. */
+    car_action_t           action;
+    uint16_t               accel_milli_g;
+    bool                   b_on_hump;
+    uint16_t               hump_count;
+    uint16_t               last_hump_height_mm;
 } car_telemetry_t;
 
-#endif /* CAR_TYPES_H */
+#endif /* CAR_H */
 
 /*** end of file ***/
 

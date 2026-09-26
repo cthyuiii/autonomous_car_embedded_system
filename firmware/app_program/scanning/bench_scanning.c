@@ -27,13 +27,14 @@
 
 #include "car_config.h"
 #include "car_log.h"
-#include "scanning.h"
+#include "scan.h"
 
 #define BENCH_STARTUP_MSEC   2000u
 #define BENCH_SERVO_HOLD_MSEC 1000u
 #define BENCH_SERVO_ROUNDS       2u
 #define BENCH_PING_COUNT        10u
 #define BENCH_SWEEP_GAP_MSEC  1000u
+#define BENCH_ANGLES             3u
 
 static char const * status_name (car_status_t status);
 static void         servo_phase (void);
@@ -61,6 +62,7 @@ INT usermain (void)
     {
         uint16_t angle_deg = 0u;
 
+        /* Cast: at most one step past SCAN_MAX_ANGLE_DEG, under 200. */
         for (angle_deg = SCAN_MIN_ANGLE_DEG; angle_deg <= SCAN_MAX_ANGLE_DEG;
              angle_deg = (uint16_t)(angle_deg + SCAN_FINE_STEP_DEG))
         {
@@ -85,7 +87,8 @@ INT usermain (void)
  */
 static void servo_phase (void)
 {
-    uint16_t const angles[3] =
+    /* Cast: the mean of two angles under 180. */
+    uint16_t const angles[BENCH_ANGLES] =
     {
         SCAN_MIN_ANGLE_DEG,
         (uint16_t)((SCAN_MIN_ANGLE_DEG + SCAN_MAX_ANGLE_DEG) / 2u),
@@ -98,7 +101,7 @@ static void servo_phase (void)
 
     for (round = 0u; round < BENCH_SERVO_ROUNDS; round++)
     {
-        for (index = 0u; index < 3u; index++)
+        for (index = 0u; index < BENCH_ANGLES; index++)
         {
             uint16_t range_mm = 0u;
 
@@ -121,6 +124,7 @@ static void servo_phase (void)
  */
 static void sonar_phase (void)
 {
+    /* Cast: the mean of two angles under 180. */
     uint16_t const centre = (uint16_t)((SCAN_MIN_ANGLE_DEG
                                         + SCAN_MAX_ANGLE_DEG) / 2u);
     uint32_t       index  = 0u;

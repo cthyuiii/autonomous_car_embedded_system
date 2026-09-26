@@ -19,17 +19,22 @@
  * standing still, either the mount is picking up vibration or
  * IMU_PITCH_TRUST_BAND_MILLI_G is too tight.
  *
+ * For terrain_report.md, with BENCH_DRIVE at 1, every time a hump ends it
+ * prints `hump over: N mm, count C, run peak P mm`.
+ *
  * Owner: Buddy 4, IMU based motion and terrain monitoring. Extend it as you
  * need; nothing else depends on it.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <tk/tkernel.h>
 
 #include "car_config.h"
 #include "car_log.h"
-#include "imu_terrain.h"
+#include "car_time.h"
+#include "imu.h"
 #include "motion.h"
 
 /* Set to 1 to drive straight while sampling. Hump HEIGHT is the integral
@@ -40,16 +45,20 @@
 #define BENCH_DRIVE            0
 
 static char const * event_name (car_motion_event_t event);
+static void         print_status (void);
+static void         print_hump_over (void);
 
 #define BENCH_STARTUP_MSEC 2000u
 #define BENCH_DRIVE_MM_PER_SEC 250u
-#define BENCH_PRINT_EVERY    10u
+#define BENCH_PRINT_EVERY    20u
 
 INT usermain (void)
 {
     uint32_t sample_count = 0u;
+    bool     b_was_on_hump = false;
 
     (void)tk_dly_tsk(BENCH_STARTUP_MSEC);
+    (void)car_time_start_ticks();
     CAR_LOG(CAR_LOG_INFO, "imu bench: hold it still and level to calibrate\n");
 
     if (CAR_OK != imu_init())
@@ -82,14 +91,6 @@ INT usermain (void)
 
     for (;;)
     {
-        int16_t            pitch_deg   = 0;
-        int16_t            heading_deg = 0;
-        int16_t            rate_dps    = 0;
-        uint16_t           milli_g     = 0u;
-        uint16_t           peak_milli_g = 0u;
-        car_motion_event_t event       = CAR_MOTION_STATIONARY;
-        car_hump_t         hump          = { 0 };
-        uint16_t           rough_milli_g = 0u;
 
 #if BENCH_DRIVE
         {
@@ -111,37 +112,77 @@ INT usermain (void)
 
         (void)imu_update();
 
+        if (b_was_on_hump && (!imu_is_hump_detected()))
+        {
+            print_hump_over();
+        }
+
+        b_was_on_hump = imu_is_hump_detected();
+
         if (0u == (sample_count % BENCH_PRINT_EVERY))
         {
-            (void)imu_get_orientation(&pitch_deg, &heading_deg);
-            (void)imu_get_event(&event);
-            (void)imu_get_turn_rate_dps(&rate_dps);
-            (void)imu_get_accel_magnitude(&milli_g);
-            (void)imu_get_peak_accel_magnitude(&peak_milli_g);
-            (void)imu_get_peak_hump(&hump);
-            (void)imu_get_terrain_roughness(&rough_milli_g);
-
-            /* One line per deliverable, in the order Buddy 4 owns them:
-             * calibration, tilt, hump, peak, motion class, collision,
-             * turn rate, and the terrain summary. */
-            CAR_LOG(CAR_LOG_INFO,
-                    "cal %d | pitch %d ok %d mag %u raw %u | "
-                    "hump %d peak %u mm | "
-                    "event %s | hit %d | rate %d dps | heading %d | "
-                    "terrain %s rough %u\n",
-                    imu_is_calibrated(),
-                    pitch_deg, imu_is_pitch_trusted(), milli_g, peak_milli_g,
-                    imu_is_hump_detected(), hump.peak_height_mm,
-                    event_name(event),
-                    imu_is_collision_detected(),
-                    rate_dps, heading_deg,
-                    imu_is_terrain_stable() ? "STABLE" : "ROUGH",
-                    rough_milli_g);
+            print_status();
         }
 
         sample_count++;
-        (void)tk_dly_tsk(IMU_SAMPLE_PERIOD_MSEC);
+        car_time_wait_tick();
     }
+}
+
+/**
+ * @brief Print the hump that just ended, for terrain_report.md.
+ */
+static void print_hump_over (void)
+{
+    uint16_t   last  = 0u;
+    uint16_t   peak  = 0u;
+    uint16_t   count = 0u;
+
+    (void)imu_get_last_hump(&last);
+    (void)imu_get_peak_hump(&peak);
+    (void)imu_get_hump_count(&count);
+    CAR_LOG(CAR_LOG_INFO, "hump over: %u mm, count %u, run peak %u mm\n",
+            last, count, peak);
+}
+
+/**
+ * @brief Print one status line with everything Buddy 4 owns.
+ */
+static void print_status (void)
+{
+    int16_t            pitch_deg     = 0;
+    int16_t            heading_deg   = 0;
+    int16_t            rate_dps      = 0;
+    uint16_t           milli_g       = 0u;
+    uint16_t           peak_milli_g  = 0u;
+    car_motion_event_t event         = CAR_MOTION_STATIONARY;
+    uint16_t           hump_mm       = 0u;
+    uint16_t           rough_milli_g = 0u;
+
+    (void)imu_get_orientation(&pitch_deg, &heading_deg);
+    (void)imu_get_event(&event);
+    (void)imu_get_turn_rate_dps(&rate_dps);
+    (void)imu_get_accel_magnitude(&milli_g);
+    (void)imu_get_peak_accel_magnitude(&peak_milli_g);
+    (void)imu_get_peak_hump(&hump_mm);
+    (void)imu_get_terrain_roughness(&rough_milli_g);
+
+    /* One line per deliverable, in the order Buddy 4 owns them:
+     * calibration, tilt, hump, peak, motion class, collision,
+     * turn rate, and the terrain summary. */
+    CAR_LOG(CAR_LOG_INFO,
+            "cal %d | pitch %d ok %d mag %u raw %u | "
+            "hump %d peak %u mm | "
+            "event %s | hit %d | rate %d dps | heading %d | "
+            "terrain %s rough %u\n",
+            imu_is_calibrated(),
+            pitch_deg, imu_is_pitch_trusted(), milli_g, peak_milli_g,
+            imu_is_hump_detected(), hump_mm,
+            event_name(event),
+            imu_is_collision_detected(),
+            rate_dps, heading_deg,
+            imu_is_terrain_stable() ? "STABLE" : "ROUGH",
+            rough_milli_g);
 }
 
 /**

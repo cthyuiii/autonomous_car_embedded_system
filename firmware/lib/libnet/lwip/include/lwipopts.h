@@ -74,8 +74,10 @@
 #endif
 
 #if TM_WIFI_MQTT
-/* One telemetry line is under 200 bytes; the default 256 byte output ring
- * would refuse a heartbeat queued behind it. */
+/* A telemetry message runs to about 340 bytes with its topic, which the
+ * default 256 byte output ring would refuse outright. A message that does
+ * not fit behind the one before waits in lwip_utk_mqtt's own ring for the
+ * next poll. */
 #define MQTT_OUTPUT_RINGBUF_SIZE        512
 #endif
 

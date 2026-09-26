@@ -1,4 +1,4 @@
-/** @file imu_terrain.c
+/** @file imu.c
  *
  * @brief LSM303DLHC driver plus tilt, hump and event estimation.
  *
@@ -10,11 +10,11 @@
  * atan, good to a tenth of a degree, and the hump integral uses the small
  * angle sine, which is 5 percent low at 30 degrees and exact at zero.
  *
- * Owner: Buddy 4, IMU based motion and terrain monitoring. Implement the TODOs
- * in this file. It is yours.
+ * Owner: Buddy 4, IMU based motion and terrain monitoring. This file is
+ * yours.
  */
 
-#include "imu_terrain.h"
+#include "imu.h"
 
 #ifdef CAR_HOST_TEST
 #include <stddef.h>
@@ -57,6 +57,8 @@
 #define LSM_IRA_REG_M_VALUE      0x48u   /* Reads as ASCII 'H' */
 
 #define IMU_AXES                 3u
+#define IMU_SIDE_AXIS            (1u - IMU_FORWARD_AXIS)
+#define IMU_UP_AXIS              2u
 #define IMU_GRAVITY_MILLI_G      1000
 #define IMU_DEGREES_PER_RADIAN_MILLI 57296
 #define IMU_MILLI_RAD_PER_DEG    17453   /* Small angle sine, times 1000 */
@@ -73,11 +75,11 @@ static int32_t  g_mag[IMU_AXES]          = { 0 };
 static int32_t  g_mag_min[IMU_AXES]      = { 0 };
 static int32_t  g_mag_max[IMU_AXES]      = { 0 };
 static int16_t  g_pitch_ref_deg          = 0;
-static int32_t  g_accel_ref_x_mg         = 0;
+static int32_t  g_accel_ref_fwd_mg       = 0;
 static int16_t  g_pitch_deg              = 0;
 static uint16_t g_accel_milli_g          = IMU_GRAVITY_MILLI_G;
-static bool     g_pitch_trusted          = false;
-static bool     g_b_calibrated           = false;
+static bool     gb_pitch_trusted          = false;
+static bool     gb_calibrated            = false;
 static uint16_t g_roughness_milli_g      = 0u;
 static int16_t  g_heading_deg            = 0;
 static int16_t  g_turn_rate_dps          = 0;
@@ -87,48 +89,58 @@ static uint32_t g_distance_mm            = 0u;
 static uint32_t g_prev_distance_mm       = 0u;
 static car_motion_event_t g_event        = CAR_MOTION_STATIONARY;
 static uint8_t  g_event_hold             = 0u;
-static bool     g_collision_latched      = false;
+static bool     gb_collision_latched      = false;
 static uint16_t g_accel_peak_mg          = IMU_GRAVITY_MILLI_G;
-static bool     g_on_hump                = false;
+/* What this sensor reads for one g, taken level and still by
+ * imu_calibrate(). Not every module reads 1000: one on this car reads
+ * about 794, which against a fixed 1000 looked like constant shaking,
+ * reported ROUGH at rest and left the pitch trust band almost no room. */
+static uint16_t g_gravity_mg             = IMU_GRAVITY_MILLI_G;
+static bool     gb_on_hump                = false;
 static int32_t  g_hump_milli_mm          = 0;
-static car_hump_t g_peak_hump            = { 0 };
+static int16_t  g_hump_pitch_deg         = 0;   /* At the last trusted sample */
+static uint16_t g_hump_count             = 0u;
+static uint16_t g_last_hump_mm           = 0u;
+static uint16_t g_peak_hump_mm           = 0u;
 
-static int16_t  atan2_deg (int32_t y, int32_t x);
+static int16_t  atan2_deg (int32_t y_axis, int32_t x_axis);
 static int32_t  atan_ratio_100 (int32_t num, int32_t den);
 static uint32_t isqrt (uint32_t value);
-static int16_t  pitch_from (int32_t ax, int32_t ay, int32_t az);
+static int16_t  pitch_from (int32_t fwd_mg, int32_t side_mg, int32_t up_mg);
 static int32_t  difference_from_gravity (uint16_t milli_g);
 static void     filter_sample (imu_raw_t const * p_raw);
 static void     update_heading (void);
 static void     update_hump (void);
-static void     update_event (int16_t previous_heading);
+static void     end_hump (void);
+static void     update_event (void);
 static bool     hw_init (void);
 static bool     hw_read (imu_raw_t * p_raw);
 static void     hw_delay_msec (uint32_t msec);
-static uint32_t hw_msec (void);
 
 car_status_t imu_init (void)
 {
-    // TODO: tk_opn_dev() the kernel I2C device (device/i2c) on
-    //       IMU_I2C_INDEX, write the control registers of both devices
-    //       with tk_wri_dev(), and tk_rea_dev() a known register to confirm
-    //       each one answers.
     car_status_t status = CAR_ERR_HARDWARE;
 
     g_pitch_deg         = 0;
     g_accel_milli_g     = IMU_GRAVITY_MILLI_G;
-    g_pitch_trusted     = false;
-    g_b_calibrated      = false;
+    gb_pitch_trusted     = false;
+    gb_calibrated       = false;
     g_roughness_milli_g = 0u;
     g_heading_deg       = 0;
     g_turn_rate_dps     = 0;
     g_event             = CAR_MOTION_STATIONARY;
     g_event_hold        = 0u;
-    g_collision_latched = false;
+    gb_collision_latched = false;
     g_accel_peak_mg     = IMU_GRAVITY_MILLI_G;
-    g_on_hump           = false;
+    g_gravity_mg        = IMU_GRAVITY_MILLI_G;
+    gb_on_hump           = false;
     g_hump_milli_mm     = 0;
-    g_peak_hump         = (car_hump_t){ 0 };
+    g_hump_pitch_deg    = 0;
+    g_hump_count        = 0u;
+    g_distance_mm       = 0u;
+    g_prev_distance_mm  = 0u;
+    g_last_hump_mm      = 0u;
+    g_peak_hump_mm      = 0u;
 
     if (hw_init())
     {
@@ -140,9 +152,6 @@ car_status_t imu_init (void)
 
 car_status_t imu_calibrate (void)
 {
-    // TODO: Average N samples for the gravity reference. Rotate the car
-    //       through a full turn with motors on and record magnetometer min
-    //       and max per axis for the hard iron offset.
     car_status_t status = CAR_OK;
     int32_t      sum[IMU_AXES] = { 0 };
     imu_raw_t    raw = { { 0 }, { 0 } };
@@ -172,6 +181,7 @@ car_status_t imu_calibrate (void)
     {
         for (axis = 0u; axis < IMU_AXES; axis++)
         {
+            /* Cast: a small positive constant, exact as int32_t. */
             g_accel_mg[axis] = sum[axis] / (int32_t)IMU_CALIBRATION_SAMPLES;
             g_mag[axis]      = raw.mag[axis];
             g_mag_min[axis]  = raw.mag[axis];
@@ -190,10 +200,13 @@ car_status_t imu_calibrate (void)
         }
         else
         {
-            g_pitch_ref_deg  = pitch_from(g_accel_mg[0], g_accel_mg[1],
-                                          g_accel_mg[2]);
-            g_accel_ref_x_mg = g_accel_mg[0];
-            g_b_calibrated   = true;
+            g_pitch_ref_deg  = pitch_from(g_accel_mg[IMU_FORWARD_AXIS],
+                                          g_accel_mg[IMU_SIDE_AXIS],
+                                          g_accel_mg[IMU_UP_AXIS]);
+            g_accel_ref_fwd_mg = g_accel_mg[IMU_FORWARD_AXIS];
+            g_gravity_mg     = (uint16_t)magnitude;   /* 700 to 1300 here */
+            g_accel_peak_mg  = g_gravity_mg;
+            gb_calibrated    = true;
         }
     }
 
@@ -202,16 +215,12 @@ car_status_t imu_calibrate (void)
 
 car_status_t imu_update (void)
 {
-    // TODO: Read six accelerometer and six magnetometer bytes, convert to
-    //       milli g and milli gauss, low pass filter, derive pitch and
-    //       heading, run the event classifier, and track the hump peak.
     car_status_t status = CAR_ERR_HARDWARE;
     imu_raw_t    raw    = { { 0 }, { 0 } };
 
     if (hw_read(&raw))
     {
-        int16_t previous_heading = g_heading_deg;
-        int32_t magnitude        = 0;
+        int32_t magnitude = 0;
 
         /* Impacts are sharp, so the collision test uses the raw sample. */
         magnitude = (int32_t)isqrt(
@@ -219,15 +228,18 @@ car_status_t imu_update (void)
             + (uint32_t)((int32_t)raw.accel_mg[1] * raw.accel_mg[1])
             + (uint32_t)((int32_t)raw.accel_mg[2] * raw.accel_mg[2]));
 
+        /* Casts: the magnitude of three 8 g axes is under 14000 mg, so
+         * it fits a uint16_t, and a uint16_t fits an int32_t. */
         if (magnitude > (int32_t)g_accel_peak_mg)
         {
             g_accel_peak_mg = (uint16_t)magnitude;
         }
 
-        if ((magnitude - IMU_GRAVITY_MILLI_G)
+        /* Casts: uint16_t and a small constant, exact as int32_t. */
+        if ((magnitude - (int32_t)g_gravity_mg)
             > (int32_t)IMU_COLLISION_THRESHOLD_MILLI_G)
         {
-            g_collision_latched = true;
+            gb_collision_latched = true;
         }
 
         filter_sample(&raw);
@@ -248,24 +260,32 @@ car_status_t imu_update (void)
             int32_t  offset = difference_from_gravity(g_accel_milli_g);
             uint16_t sample = (uint16_t)((offset < 0) ? -offset : offset);
 
+            /* Casts: the offset is under 14000 mg, and the filtered
+             * roughness never exceeds the largest sample. The trust band
+             * is a small constant. */
             g_roughness_milli_g = (uint16_t)
                 (g_roughness_milli_g
                  - (g_roughness_milli_g >> IMU_ROUGHNESS_SHIFT)
                  + (sample >> IMU_ROUGHNESS_SHIFT));
-            g_pitch_trusted = (offset
-                               <= (int32_t)IMU_PITCH_TRUST_BAND_MILLI_G);
+            gb_pitch_trusted = (offset
+                               <= (gb_on_hump
+                                   ? (int32_t)IMU_HUMP_TRUST_BAND_MILLI_G
+                                   : (int32_t)IMU_PITCH_TRUST_BAND_MILLI_G));
         }
 
-        if (g_pitch_trusted)
+        /* Cast: both pitches are -180 to 180 degrees, so the difference
+         * fits an int16_t. */
+        if (gb_pitch_trusted)
         {
-            g_pitch_deg = (int16_t)(pitch_from(g_accel_mg[0], g_accel_mg[1],
-                                               g_accel_mg[2])
+            g_pitch_deg = (int16_t)(pitch_from(g_accel_mg[IMU_FORWARD_AXIS],
+                                               g_accel_mg[IMU_SIDE_AXIS],
+                                               g_accel_mg[IMU_UP_AXIS])
                                     - g_pitch_ref_deg);
         }
 
         update_heading();
         update_hump();
-        update_event(previous_heading);
+        update_event();
         status = CAR_OK;
     }
 
@@ -285,7 +305,6 @@ car_status_t imu_feed_odometry (uint32_t distance_mm, int16_t left_mm_per_sec,
 car_status_t imu_get_orientation (int16_t * p_pitch_deg,
                                   int16_t * p_heading_deg)
 {
-    // TODO: Copy the filtered values from imu_update().
     car_status_t status = CAR_ERR_RANGE;
 
     if ((NULL != p_pitch_deg) && (NULL != p_heading_deg))
@@ -300,8 +319,6 @@ car_status_t imu_get_orientation (int16_t * p_pitch_deg,
 
 car_status_t imu_get_event (car_motion_event_t * p_event)
 {
-    // TODO: Threshold the filtered magnitude, pitch and turn rate into
-    //       one of the car_motion_event_t classes with hysteresis.
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_event)
@@ -315,9 +332,6 @@ car_status_t imu_get_event (car_motion_event_t * p_event)
 
 car_status_t imu_get_turn_rate_dps (int16_t * p_rate_dps)
 {
-    // TODO: If IMU_TURN_RATE_FROM_ENCODERS, take the wheel speed difference
-    //       from motion_get_state() through the controller, else
-    //       differentiate the heading. See the header for the tradeoff.
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_rate_dps)
@@ -336,7 +350,7 @@ car_status_t imu_get_peak_accel_magnitude (uint16_t * p_milli_g)
     if (NULL != p_milli_g)
     {
         *p_milli_g      = g_accel_peak_mg;
-        g_accel_peak_mg = IMU_GRAVITY_MILLI_G;
+        g_accel_peak_mg = g_gravity_mg;
         status          = CAR_OK;
     }
 
@@ -345,7 +359,7 @@ car_status_t imu_get_peak_accel_magnitude (uint16_t * p_milli_g)
 
 bool imu_is_pitch_trusted (void)
 {
-    return g_pitch_trusted;
+    return gb_pitch_trusted;
 }
 
 car_status_t imu_get_accel_magnitude (uint16_t * p_milli_g)
@@ -366,11 +380,11 @@ car_status_t imu_get_accel_magnitude (uint16_t * p_milli_g)
  *
  * @param[in] milli_g Magnitude to test.
  *
- * @return Absolute difference from IMU_GRAVITY_MILLI_G.
+ * @return Absolute difference from the calibrated one g.
  */
 bool imu_is_calibrated (void)
 {
-    return g_b_calibrated;
+    return gb_calibrated;
 }
 
 car_status_t imu_get_terrain_roughness (uint16_t * p_milli_g)
@@ -393,26 +407,51 @@ bool imu_is_terrain_stable (void)
 
 static int32_t difference_from_gravity (uint16_t milli_g)
 {
-    int32_t difference = (int32_t)milli_g - IMU_GRAVITY_MILLI_G;
+    /* Casts: two uint16_t values, exact as int32_t. */
+    int32_t difference = (int32_t)milli_g - (int32_t)g_gravity_mg;
 
     return (difference < 0) ? -difference : difference;
 }
 
 bool imu_is_hump_detected (void)
 {
-    // TODO: True while pitch magnitude exceeds IMU_HUMP_PITCH_THRESHOLD_DEG.
-    return g_on_hump;
+    return gb_on_hump;
 }
 
-car_status_t imu_get_peak_hump (car_hump_t * p_hump)
+car_status_t imu_get_peak_hump (uint16_t * p_height_mm)
 {
-    // TODO: Return CAR_OK once imu_update() maintains g_peak_hump.
     car_status_t status = CAR_ERR_RANGE;
 
-    if (NULL != p_hump)
+    if (NULL != p_height_mm)
     {
-        *p_hump = g_peak_hump;
-        status  = CAR_OK;
+        *p_height_mm = g_peak_hump_mm;
+        status       = CAR_OK;
+    }
+
+    return status;
+}
+
+car_status_t imu_get_last_hump (uint16_t * p_height_mm)
+{
+    car_status_t status = CAR_ERR_RANGE;
+
+    if (NULL != p_height_mm)
+    {
+        *p_height_mm = g_last_hump_mm;
+        status       = CAR_OK;
+    }
+
+    return status;
+}
+
+car_status_t imu_get_hump_count (uint16_t * p_count)
+{
+    car_status_t status = CAR_ERR_RANGE;
+
+    if (NULL != p_count)
+    {
+        *p_count = g_hump_count;
+        status   = CAR_OK;
     }
 
     return status;
@@ -420,11 +459,9 @@ car_status_t imu_get_peak_hump (car_hump_t * p_hump)
 
 bool imu_is_collision_detected (void)
 {
-    // TODO: Latch true when the acceleration magnitude minus 1 g exceeds
-    //       IMU_COLLISION_THRESHOLD_MILLI_G, clear on read.
-    bool b_latched = g_collision_latched;
+    bool b_latched = gb_collision_latched;
 
-    g_collision_latched = false;
+    gb_collision_latched = false;
 
     return b_latched;
 }
@@ -468,25 +505,25 @@ static void filter_sample (imu_raw_t const * p_raw)
  */
 static void update_heading (void)
 {
-    int32_t x = g_mag[0];
-    int32_t y = g_mag[1];
+    int32_t mag_x = g_mag[0];
+    int32_t mag_y = g_mag[1];
     int16_t heading = 0;
 
     if ((g_mag_max[0] - g_mag_min[0]) > IMU_MAG_MIN_SPREAD)
     {
-        x -= (g_mag_max[0] + g_mag_min[0]) / 2;
+        mag_x -= (g_mag_max[0] + g_mag_min[0]) / 2;
     }
 
     if ((g_mag_max[1] - g_mag_min[1]) > IMU_MAG_MIN_SPREAD)
     {
-        y -= (g_mag_max[1] + g_mag_min[1]) / 2;
+        mag_y -= (g_mag_max[1] + g_mag_min[1]) / 2;
     }
 
-    heading = atan2_deg(-y, x);
+    heading = atan2_deg(-mag_y, mag_x);
 
     if (heading < 0)
     {
-        heading = (int16_t)(heading + 360);
+        heading = (int16_t)(heading + 360);   /* -180..-1 becomes 180..359 */
     }
 
     g_heading_deg = heading;
@@ -495,79 +532,88 @@ static void update_heading (void)
 /**
  * @brief Integrate sin(pitch) over distance while climbing, and close the
  *        hump when the pitch drops back below the threshold.
+ *
+ * Only trusted samples count. Each adds the distance travelled since the
+ * previous trusted sample at the mean of the two pitches, so a stretch
+ * where pitch could not be believed, often the jolt at the foot of a
+ * hump, is bridged by the straight line between the pitch before it and
+ * the pitch after it, instead of being counted at the frozen value.
  */
 static void update_hump (void)
 {
-    int32_t step_mm = (int32_t)(g_distance_mm - g_prev_distance_mm);
+    /* Casts: odometry only grows, and between two trusted samples by far
+     * less than 2^31 mm. The pitches are int16_t, exact as int32_t. */
+    int32_t step_mm  = (int32_t)(g_distance_mm - g_prev_distance_mm);
+    int32_t mean_deg = ((int32_t)g_hump_pitch_deg + (int32_t)g_pitch_deg)
+                       / 2;
 
-    g_prev_distance_mm = g_distance_mm;
-
-    if (g_pitch_deg > (int16_t)IMU_HUMP_PITCH_THRESHOLD_DEG)
+    if (!gb_pitch_trusted)
     {
-        g_on_hump = true;
-        g_hump_milli_mm += ((int32_t)g_pitch_deg * IMU_MILLI_RAD_PER_DEG
-                            * step_mm) / 1000;
+        /* Bridged by the next trusted sample. */
     }
-    else if (g_on_hump)
+    else if (g_pitch_deg > (int16_t)IMU_HUMP_PITCH_THRESHOLD_DEG)
     {
-        uint16_t height_mm = 0u;
-
-        if (g_hump_milli_mm > 0)
-        {
-            height_mm = (uint16_t)(g_hump_milli_mm / 1000);
-        }
-
-        if (height_mm >= g_peak_hump.peak_height_mm)
-        {
-            g_peak_hump.peak_height_mm = height_mm;
-            g_peak_hump.timestamp_msec = hw_msec();
-            g_peak_hump.b_is_run_peak  = true;
-        }
-
-        g_on_hump = (g_pitch_deg < -(int16_t)IMU_HUMP_PITCH_THRESHOLD_DEG);
-        g_hump_milli_mm = 0;
+        gb_on_hump       = true;
+        g_hump_milli_mm += (mean_deg * IMU_MILLI_RAD_PER_DEG * step_mm)
+                           / 1000;
+    }
+    else if (gb_on_hump)
+    {
+        end_hump();
     }
     else
     {
         /* Flat ground. */
     }
+
+    if (gb_pitch_trusted)
+    {
+        g_prev_distance_mm = g_distance_mm;
+        g_hump_pitch_deg   = g_pitch_deg;
+    }
 }
 
 /**
- * @brief Turn rate from the selected source, then the event classifier.
+ * @brief The climb is over: record the hump, and the run's peak if it is.
  *
- * @param[in] previous_heading Heading before this update, for the
- *                             magnetometer path.
+ * A hump under 1 mm is a tilt the car barely moved on, not a hump.
  */
-static void update_event (int16_t previous_heading)
+static void end_hump (void)
+{
+    if (g_hump_milli_mm >= 1000)
+    {
+        g_hump_count++;
+        /* Cast: a hump on a toy car is millimetres high, not 65 metres. */
+        g_last_hump_mm = (uint16_t)(g_hump_milli_mm / 1000);
+
+        if (g_last_hump_mm > g_peak_hump_mm)
+        {
+            g_peak_hump_mm = g_last_hump_mm;
+        }
+    }
+
+    /* Still on the hump while coming down its far side, so the descent
+     * never opens a second one. */
+    gb_on_hump      = (g_pitch_deg < -(int16_t)IMU_HUMP_PITCH_THRESHOLD_DEG);
+    g_hump_milli_mm = 0;
+}
+
+/**
+ * @brief Turn rate from the wheel speeds, then the event classifier.
+ */
+static void update_event (void)
 {
     car_motion_event_t candidate = CAR_MOTION_STATIONARY;
     int32_t rate    = 0;
-    int32_t forward = g_accel_mg[0] - g_accel_ref_x_mg;
+    int32_t forward = g_accel_mg[IMU_FORWARD_AXIS] - g_accel_ref_fwd_mg;
 
-#if IMU_TURN_RATE_FROM_ENCODERS
+    /* Casts: two int16_t speeds and a small constant, exact as int32_t;
+     * the product stays well inside it. */
     rate = (((int32_t)g_wheel_left - (int32_t)g_wheel_right)
             * IMU_DEGREES_PER_RADIAN_MILLI) / ((int32_t)WHEEL_BASE_MM * 1000);
-#else
-    rate = (int32_t)g_heading_deg - (int32_t)previous_heading;
 
-    if (rate > 180)
-    {
-        rate -= 360;
-    }
-    else if (rate < -180)
-    {
-        rate += 360;
-    }
-    else
-    {
-        /* No wrap. */
-    }
-
-    rate = (rate * 1000) / (int32_t)IMU_SAMPLE_PERIOD_MSEC;
-#endif
-    (void)previous_heading;
-
+    /* Cast: a turn rate from wheel speeds of at most 1600 mm/s over the
+     * wheel base is under 32767 degrees per second. */
     g_turn_rate_dps = (int16_t)rate;
 
     if (forward < 0)
@@ -580,7 +626,8 @@ static void update_event (int16_t previous_heading)
         rate = -rate;
     }
 
-    if (g_collision_latched)
+    /* Casts: the thresholds are small positive constants. */
+    if (gb_collision_latched)
     {
         candidate = CAR_MOTION_IMPACT;
     }
@@ -624,51 +671,54 @@ static void update_event (int16_t previous_heading)
 /**
  * @brief Pitch of the forward axis from the gravity vector.
  *
- * @param[in] ax Forward axis acceleration, mg.
- * @param[in] ay Sideways axis acceleration, mg.
- * @param[in] az Vertical axis acceleration, mg.
+ * @param[in] fwd_mg  Forward axis acceleration, mg.
+ * @param[in] side_mg Sideways axis acceleration, mg.
+ * @param[in] up_mg   Vertical axis acceleration, mg.
  *
  * @return Degrees, nose up positive with IMU_PITCH_SIGN at +1.
  */
-static int16_t pitch_from (int32_t ax, int32_t ay, int32_t az)
+static int16_t pitch_from (int32_t fwd_mg, int32_t side_mg, int32_t up_mg)
 {
-    int32_t horizontal = (int32_t)isqrt((uint32_t)(ay * ay)
-                                        + (uint32_t)(az * az));
+    /* Casts: squares of axes under 8000 mg are positive and fit
+     * uint32_t, and the root of their sum fits int32_t. */
+    int32_t horizontal = (int32_t)isqrt((uint32_t)(side_mg * side_mg)
+                                        + (uint32_t)(up_mg * up_mg));
 
-    return atan2_deg(-ax * IMU_PITCH_SIGN, horizontal);
+    return atan2_deg(-fwd_mg * IMU_PITCH_SIGN, horizontal);
 }
 
 /**
  * @brief Integer atan2 in whole degrees, -180 to 180.
  *
- * @param[in] y Numerator axis.
- * @param[in] x Denominator axis.
+ * @param[in] y_axis Numerator axis.
+ * @param[in] x_axis Denominator axis.
  *
- * @return Angle of (x, y) from the positive x axis, counter clockwise.
+ * @return Angle of the point (x_axis, y_axis) from the positive x axis,
+ *         counter clockwise.
  */
-static int16_t atan2_deg (int32_t y, int32_t x)
+static int16_t atan2_deg (int32_t y_axis, int32_t x_axis)
 {
-    int32_t ax       = (x < 0) ? -x : x;
-    int32_t ay       = (y < 0) ? -y : y;
+    int32_t abs_x       = (x_axis < 0) ? -x_axis : x_axis;
+    int32_t abs_y       = (y_axis < 0) ? -y_axis : y_axis;
     int32_t angle100 = 0;
 
-    if ((0 != ax) || (0 != ay))
+    if ((0 != abs_x) || (0 != abs_y))
     {
-        if (ay <= ax)
+        if (abs_y <= abs_x)
         {
-            angle100 = atan_ratio_100(ay, ax);
+            angle100 = atan_ratio_100(abs_y, abs_x);
         }
         else
         {
-            angle100 = 9000 - atan_ratio_100(ax, ay);
+            angle100 = 9000 - atan_ratio_100(abs_x, abs_y);
         }
 
-        if (x < 0)
+        if (x_axis < 0)
         {
             angle100 = 18000 - angle100;
         }
 
-        if (y < 0)
+        if (y_axis < 0)
         {
             angle100 = -angle100;
         }
@@ -676,7 +726,7 @@ static int16_t atan2_deg (int32_t y, int32_t x)
 
     angle100 += (angle100 >= 0) ? 50 : -50;
 
-    return (int16_t)(angle100 / 100);
+    return (int16_t)(angle100 / 100);   /* -180 to 180 degrees */
 }
 
 /**
@@ -692,11 +742,11 @@ static int16_t atan2_deg (int32_t y, int32_t x)
  */
 static int32_t atan_ratio_100 (int32_t num, int32_t den)
 {
-    int32_t t    = (num * 1000) / den;
-    int32_t z2   = t * (t - 1000);
-    int32_t coef = 1402 + ((380 * t) / 1000);
+    int32_t ratio    = (num * 1000) / den;
+    int32_t ratio_term   = ratio * (ratio - 1000);
+    int32_t coef = 1402 + ((380 * ratio) / 1000);
 
-    return ((45 * t) / 10) - ((z2 * coef) / 1000000);
+    return ((45 * ratio) / 10) - ((ratio_term * coef) / 1000000);
 }
 
 /**
@@ -742,17 +792,16 @@ static imu_raw_t g_host_raw =
     { 0, 0, IMU_GRAVITY_MILLI_G },
     { 300, 0, 0 }
 };
-static uint32_t g_host_msec = 0u;
 
 void imu_host_inject (int16_t ax_mg, int16_t ay_mg, int16_t az_mg,
-                      int16_t mx, int16_t my, int16_t mz)
+                      int16_t mag_x, int16_t mag_y, int16_t mag_z)
 {
     g_host_raw.accel_mg[0] = ax_mg;
     g_host_raw.accel_mg[1] = ay_mg;
     g_host_raw.accel_mg[2] = az_mg;
-    g_host_raw.mag[0]      = mx;
-    g_host_raw.mag[1]      = my;
-    g_host_raw.mag[2]      = mz;
+    g_host_raw.mag[0]      = mag_x;
+    g_host_raw.mag[1]      = mag_y;
+    g_host_raw.mag[2]      = mag_z;
 }
 
 static bool hw_init (void)
@@ -769,19 +818,16 @@ static bool hw_read (imu_raw_t * p_raw)
 
 static void hw_delay_msec (uint32_t msec)
 {
-    g_host_msec += msec;
-}
-
-static uint32_t hw_msec (void)
-{
-    g_host_msec += IMU_SAMPLE_PERIOD_MSEC;
-
-    return g_host_msec;
+    (void)msec;
 }
 
 #else /* CAR_HOST_TEST */
 
-static ID g_i2c = 0;
+/* Where the kernel's hw_setting.c puts I2C0 at boot. */
+#define KERNEL_I2C_SDA_PIN       8u
+#define KERNEL_I2C_SCL_PIN       9u
+
+static ID gh_i2c = 0;
 
 static bool read_block (UW address, uint8_t reg, uint8_t * p_buf, SZ len);
 static bool write_reg (UW address, uint8_t reg, uint8_t value);
@@ -798,33 +844,45 @@ static bool hw_init (void)
     bool b_ok  = false;
     UB   value = 0u;
 
-    g_i2c = tk_opn_dev((UB const *)IMU_I2C_DEVICE_NAME, TD_UPDATE);
+    /* Cast: the kernel spells a string as UB const *, same bytes. */
+    gh_i2c = tk_opn_dev((UB const *)IMU_I2C_DEVICE_NAME, TD_UPDATE);
 
-    if (g_i2c > 0)
+    if (gh_i2c > 0)
     {
-        /* Same pad setup the kernel driver applies to its default pins. */
-        out_w(GPIO_CTRL(IMU_I2C_SDA_PIN), GPIO_CTRL_FUNCSEL_I2C);
-        out_w(GPIO(IMU_I2C_SDA_PIN),
-              GPIO_IE | GPIO_DRIVE_4MA | GPIO_PUE | GPIO_SHEMITT);
-        out_w(GPIO_CTRL(IMU_I2C_SCL_PIN), GPIO_CTRL_FUNCSEL_I2C);
-        out_w(GPIO(IMU_I2C_SCL_PIN),
-              GPIO_IE | GPIO_DRIVE_4MA | GPIO_PUE | GPIO_SHEMITT);
+        /* The kernel brings I2C0 up on GP8 and GP9, which on this board
+         * are the left motor's inputs, and a pin keeps its function until
+         * told otherwise, so the bus traffic would drive that motor too.
+         * Unless motion has already claimed them, park them as inputs
+         * pulled low, which leaves the motor off. */
+        if (car_hw_gpio_is_i2c(KERNEL_I2C_SDA_PIN))
+        {
+            car_hw_gpio_input_pulldown(KERNEL_I2C_SDA_PIN);
+        }
 
-        b_ok = write_reg(IMU_ACCEL_I2C_ADDR, LSM_CTRL_REG1_A,
-                         LSM_CTRL_REG1_A_100HZ)
-               && write_reg(IMU_ACCEL_I2C_ADDR, LSM_CTRL_REG4_A,
-                            LSM_CTRL_REG4_A_HR_2G)
-               && read_reg(IMU_ACCEL_I2C_ADDR, LSM_CTRL_REG1_A, &value)
+        if (car_hw_gpio_is_i2c(KERNEL_I2C_SCL_PIN))
+        {
+            car_hw_gpio_input_pulldown(KERNEL_I2C_SCL_PIN);
+        }
+
+        /* Same pad setup the kernel driver applies to its default pins. */
+        car_hw_gpio_i2c(IMU_I2C_SDA_PIN);
+        car_hw_gpio_i2c(IMU_I2C_SCL_PIN);
+
+        b_ok = (write_reg(IMU_ACCEL_I2C_ADDR, LSM_CTRL_REG1_A,
+                          LSM_CTRL_REG1_A_100HZ))
+               && (write_reg(IMU_ACCEL_I2C_ADDR, LSM_CTRL_REG4_A,
+                             LSM_CTRL_REG4_A_HR_2G))
+               && (read_reg(IMU_ACCEL_I2C_ADDR, LSM_CTRL_REG1_A, &value))
                && (LSM_CTRL_REG1_A_100HZ == value);
 
         b_ok = b_ok
-               && write_reg(IMU_MAG_I2C_ADDR, LSM_CRA_REG_M,
-                            LSM_CRA_REG_M_75HZ)
-               && write_reg(IMU_MAG_I2C_ADDR, LSM_CRB_REG_M,
-                            LSM_CRB_REG_M_1_3_GAUSS)
-               && write_reg(IMU_MAG_I2C_ADDR, LSM_MR_REG_M,
-                            LSM_MR_REG_M_CONTINUOUS)
-               && read_reg(IMU_MAG_I2C_ADDR, LSM_IRA_REG_M, &value)
+               && (write_reg(IMU_MAG_I2C_ADDR, LSM_CRA_REG_M,
+                             LSM_CRA_REG_M_75HZ))
+               && (write_reg(IMU_MAG_I2C_ADDR, LSM_CRB_REG_M,
+                             LSM_CRB_REG_M_1_3_GAUSS))
+               && (write_reg(IMU_MAG_I2C_ADDR, LSM_MR_REG_M,
+                             LSM_MR_REG_M_CONTINUOUS))
+               && (read_reg(IMU_MAG_I2C_ADDR, LSM_IRA_REG_M, &value))
                && (LSM_IRA_REG_M_VALUE == value);
     }
 
@@ -844,16 +902,17 @@ static bool hw_read (imu_raw_t * p_raw)
     uint8_t mag[6]   = { 0 };
     bool    b_ok     = false;
 
-    if (read_block(IMU_ACCEL_I2C_ADDR, LSM_OUT_X_L_A | LSM_AUTO_INCREMENT,
-                   accel, (SZ)sizeof(accel))
-        && read_block(IMU_MAG_I2C_ADDR, LSM_OUT_X_H_M, mag, (SZ)sizeof(mag)))
+    /* Casts: six byte buffers, and SZ holds any object size. */
+    if ((read_block(IMU_ACCEL_I2C_ADDR, LSM_OUT_X_L_A | LSM_AUTO_INCREMENT,
+                    accel, (SZ)sizeof(accel)))
+        && (read_block(IMU_MAG_I2C_ADDR, LSM_OUT_X_H_M, mag, (SZ)sizeof(mag))))
     {
         uint32_t axis = 0u;
 
         /* Accelerometer: little endian, 12 bits left justified. */
         for (axis = 0u; axis < IMU_AXES; axis++)
         {
-            int16_t value = (int16_t)((uint16_t)accel[(2u * axis) + 1u] << 8
+            int16_t value = (int16_t)(((uint16_t)accel[(2u * axis) + 1u] << 8)
                                       | (uint16_t)accel[2u * axis]);
 
             /* High resolution mode is 1 mg per count at plus or minus
@@ -863,9 +922,9 @@ static bool hw_read (imu_raw_t * p_raw)
         }
 
         /* Magnetometer: big endian, registers ordered X, Z, Y. */
-        p_raw->mag[0] = (int16_t)((uint16_t)mag[0] << 8 | (uint16_t)mag[1]);
-        p_raw->mag[2] = (int16_t)((uint16_t)mag[2] << 8 | (uint16_t)mag[3]);
-        p_raw->mag[1] = (int16_t)((uint16_t)mag[4] << 8 | (uint16_t)mag[5]);
+        p_raw->mag[0] = (int16_t)(((uint16_t)mag[0] << 8) | (uint16_t)mag[1]);
+        p_raw->mag[2] = (int16_t)(((uint16_t)mag[2] << 8) | (uint16_t)mag[3]);
+        p_raw->mag[1] = (int16_t)(((uint16_t)mag[4] << 8) | (uint16_t)mag[5]);
         b_ok = true;
     }
 
@@ -894,7 +953,8 @@ static bool read_block (UW address, uint8_t reg, uint8_t * p_buf, SZ len)
     };
     SZ actual = 0;
 
-    return (E_OK <= tk_swri_dev(g_i2c, TDN_I2C_EXEC, &exec,
+    /* Cast: SZ holds any object size. */
+    return (E_OK <= tk_swri_dev(gh_i2c, TDN_I2C_EXEC, &exec,
                                 (SZ)sizeof(exec), &actual));
 }
 
@@ -909,7 +969,7 @@ static bool read_block (UW address, uint8_t reg, uint8_t * p_buf, SZ len)
  */
 static bool write_reg (UW address, uint8_t reg, uint8_t value)
 {
-    return (E_OK <= i2c_write_reg(g_i2c, address, reg, value));
+    return (E_OK <= i2c_write_reg(gh_i2c, address, reg, value));
 }
 
 /**
@@ -923,17 +983,12 @@ static bool write_reg (UW address, uint8_t reg, uint8_t value)
  */
 static bool read_reg (UW address, uint8_t reg, uint8_t * p_value)
 {
-    return (E_OK <= i2c_read_reg(g_i2c, address, reg, p_value));
+    return (E_OK <= i2c_read_reg(gh_i2c, address, reg, p_value));
 }
 
 static void hw_delay_msec (uint32_t msec)
 {
-    (void)tk_dly_tsk((RELTIM)msec);
-}
-
-static uint32_t hw_msec (void)
-{
-    return car_hw_msec();
+    (void)tk_dly_tsk((RELTIM)msec);   /* RELTIM is 32 bit, as msec is */
 }
 
 #endif /* CAR_HOST_TEST */

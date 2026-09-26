@@ -19,10 +19,6 @@
  * from USB. On USB alone the rail sags as soon as a motor starts and the
  * board resets, which looks like a firmware crash.
  *
- * NOTE: Encoder counts stay at zero unless MOTION_OPEN_LOOP is 0 in
- * car_config.h. Leave it at 1 until the encoders are physically wired: the
- * firmware then drives open loop and never waits for a pulse.
- *
  * Owner: Buddy 2, motion control. Extend it as you need; nothing else depends
  * on it.
  */
@@ -33,12 +29,14 @@
 
 #include "car_config.h"
 #include "car_log.h"
+#include "car_time.h"
 #include "motion.h"
 
 #define BENCH_DISTANCE_MM     500u
 #define BENCH_STARTUP_MSEC   2000u
 #define BENCH_SINGLE_MSEC    2000u
 #define BENCH_PAUSE_MSEC     1000u
+#define BENCH_SPEED_PRINT_MSEC 100u   /* In motion ticks' own counting */
 #define BENCH_ONE_WHEEL      1000    /* Steer hard enough to stop the other */
 
 static void run_for (int16_t steer_permille, uint32_t msec,
@@ -47,12 +45,12 @@ static void report_encoders (void);
 
 INT usermain (void)
 {
-    uint32_t left  = 0u;
-    uint32_t right = 0u;
+    motion_state_t state = { 0 };
 
     (void)tk_dly_tsk(BENCH_STARTUP_MSEC);
-    CAR_LOG(CAR_LOG_INFO, "motion bench: open loop %u, encoders GP%u GP%u\n",
-            MOTION_OPEN_LOOP, ENCODER_LEFT_PIN, ENCODER_RIGHT_PIN);
+    (void)car_time_start_ticks();
+    CAR_LOG(CAR_LOG_INFO, "motion bench: encoders GP%u GP%u\n",
+            ENCODER_LEFT_PIN, ENCODER_RIGHT_PIN);
     CAR_LOG(CAR_LOG_INFO, "wheels off the ground, battery connected\n");
 
     if (CAR_OK != motion_init())
@@ -62,6 +60,8 @@ INT usermain (void)
     else
     {
         (void)motion_set_speed(MOTION_DEFAULT_SPEED_MM_PER_SEC);
+        CAR_LOG(CAR_LOG_INFO, "target %u mm/s per wheel\n",
+                MOTION_DEFAULT_SPEED_MM_PER_SEC);
 
         run_for(BENCH_ONE_WHEEL, BENCH_SINGLE_MSEC, "left only, M1");
         run_for(-BENCH_ONE_WHEEL, BENCH_SINGLE_MSEC, "right only, M2");
@@ -75,19 +75,20 @@ INT usermain (void)
         {
             if (CAR_ERR_HARDWARE == motion_tick())
             {
-                (void)motion_get_encoder_counts(&left, &right);
+                (void)motion_get_state(&state);
                 CAR_LOG(CAR_LOG_ERROR,
                         "a turning wheel stopped pulsing: left %u right %u\n",
-                        left, right);
+                        state.encoder_count_left, state.encoder_count_right);
                 break;
             }
 
-            (void)tk_dly_tsk(MOTION_TICK_PERIOD_MSEC);
+            car_time_wait_tick();
         }
 
         (void)motion_stop();
-        (void)motion_get_encoder_counts(&left, &right);
-        CAR_LOG(CAR_LOG_INFO, "final counts: left %u right %u\n", left, right);
+        (void)motion_get_state(&state);
+        CAR_LOG(CAR_LOG_INFO, "final counts: left %u right %u\n",
+                state.encoder_count_left, state.encoder_count_right);
     }
 
     /* The initial task must never return: the kernel shuts down if it does. */
@@ -114,7 +115,22 @@ static void run_for (int16_t steer_permille, uint32_t msec,
     for (elapsed = 0u; elapsed < msec; elapsed += MOTION_TICK_PERIOD_MSEC)
     {
         (void)motion_tick();
-        (void)tk_dly_tsk(MOTION_TICK_PERIOD_MSEC);
+
+        /* Live speeds, signed by the way each wheel really turned. Driving
+         * forward, a negative wheel has its ENCODER_*_B_FORWARD backwards.
+         * A reading that leaps about while the wheel sounds steady is
+         * encoder noise; a smooth swing either side of the target is the
+         * speed loop hunting. */
+        if (0u == (elapsed % BENCH_SPEED_PRINT_MSEC))
+        {
+            motion_state_t state = { 0 };
+
+            (void)motion_get_state(&state);
+            CAR_LOG(CAR_LOG_INFO, "  speed left %d right %d mm/s\n",
+                    state.left_mm_per_sec, state.right_mm_per_sec);
+        }
+
+        car_time_wait_tick();
     }
 
     (void)motion_stop();
@@ -136,14 +152,12 @@ static void report_encoders (void)
         CAR_LOG(CAR_LOG_INFO, "encoders seen: left %d right %d\n",
                 state.b_left_encoder, state.b_right_encoder);
 
-#if !MOTION_OPEN_LOOP
-        if (!state.b_left_encoder || !state.b_right_encoder)
+        if ((!state.b_left_encoder) || (!state.b_right_encoder))
         {
-            CAR_LOG(CAR_LOG_INFO,
-                    "a missing encoder is driven open loop; set "
-                    "MOTION_OPEN_LOOP to 1 while none are fitted\n");
+            CAR_LOG(CAR_LOG_ERROR,
+                    "a missing encoder reads zero speed, so its wheel is "
+                    "driven hard: check its wiring\n");
         }
-#endif
     }
 }
 

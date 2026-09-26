@@ -17,17 +17,36 @@
 #include <stdint.h>
 
 #include "car_config.h"
-#include "scanning.h"
+#include "scan.h"
+
+/* The recovery pattern hands out a turn and a drive for every step. */
+#define TEST_RECOVER_CALLS  (2u * SCAN_RECOVER_STEPS)
+
+static void test_api (void);
+static void test_servo_band (void);
+static void test_wall_and_plan (void);
+static void test_recovery (void);
+static void test_detour (void);
 
 int main (void)
 {
-    uint16_t               range_mm   = 0u;
-    uint16_t               angle_deg  = 0u;
-    uint16_t               pulse_usec = 0u;
+    test_api();
+    test_servo_band();
+    test_wall_and_plan();
+    test_recovery();
+    test_detour();
+
+    return 0;
+}
+
+/**
+ * @brief Every call accepts what it should and refuses what it should not.
+ */
+static void test_api (void)
+{
+    uint16_t               range_mm = 0u;
     car_obstacle_profile_t profile  = { 0 };
     car_avoid_action_t     action   = CAR_AVOID_STOP;
-    uint16_t               amount   = 0u;
-    uint32_t               index    = 0u;
 
     assert(CAR_OK == scan_init());
     assert(CAR_OK == scan_measure(90u, &range_mm));
@@ -40,10 +59,22 @@ int main (void)
     assert(CAR_OK == scan_plan_avoidance(&profile, &action));
     assert(CAR_ERR_RANGE == scan_plan_avoidance(NULL, &action));
     assert(CAR_ERR_NO_DATA == scan_recover_line());
+}
 
-    /* The horn must never leave the sweep band, whatever is asked of it.
-     * This is the guarantee that keeps a congested mount intact, so it is
-     * checked at both extremes and at the centre. */
+/**
+ * @brief The horn never leaves the sweep band, whatever is asked of it.
+ *
+ * This is the guarantee that keeps a congested mount intact, so it is
+ * checked at both extremes and at the centre.
+ */
+static void test_servo_band (void)
+{
+    uint16_t               range_mm   = 0u;
+    uint16_t               angle_deg  = 0u;
+    uint16_t               pulse_usec = 0u;
+    car_obstacle_profile_t profile    = { 0 };
+    car_avoid_action_t     action     = CAR_AVOID_STOP;
+
     assert(CAR_OK == scan_measure(0u, &range_mm));
     scan_host_get_servo(&angle_deg, &pulse_usec);
     assert(SCAN_MIN_ANGLE_DEG == angle_deg);
@@ -58,8 +89,8 @@ int main (void)
     assert(SERVO_CENTRE_PULSE_USEC == pulse_usec);
     assert(CAR_OK == scan_measure(SCAN_MAX_ANGLE_DEG, &range_mm));
     scan_host_get_servo(&angle_deg, &pulse_usec);
-    assert(pulse_usec == (SERVO_CENTRE_PULSE_USEC
-                          + (SCAN_HALF_SWEEP_DEG * SERVO_USEC_PER_DEG)));
+    assert((SERVO_CENTRE_PULSE_USEC
+            + (SCAN_HALF_SWEEP_DEG * SERVO_USEC_PER_DEG)) == pulse_usec);
     assert(pulse_usec >= SERVO_PULSE_MIN_USEC);
     assert(pulse_usec <= SERVO_PULSE_MAX_USEC);
 
@@ -76,9 +107,19 @@ int main (void)
 
     /* Open floor: nothing valid, the plan is to continue. */
     assert(false == profile.b_is_valid);
+    assert(CAR_OK == scan_plan_avoidance(&profile, &action));
     assert(CAR_AVOID_CONTINUE == action);
+}
 
-    /* A wall across the whole arc: valid, no clearance, reverse. */
+/**
+ * @brief A wall across the whole arc is valid with no clearance, so the
+ *        plan is to reverse; clearance on a side makes that side the plan.
+ */
+static void test_wall_and_plan (void)
+{
+    car_obstacle_profile_t profile = { 0 };
+    car_avoid_action_t     action  = CAR_AVOID_STOP;
+
     scan_host_inject_range(100u);
     assert(CAR_OK == scan_coarse(&profile));
     assert(true == profile.b_is_valid);
@@ -106,8 +147,18 @@ int main (void)
     profile.clearance_left_mm = 100u;
     assert(CAR_OK == scan_plan_avoidance(&profile, &action));
     assert(CAR_AVOID_RIGHT == action);
+}
 
-    /* Recovery hands out a turn, then a drive, until the line is seen. */
+/**
+ * @brief Recovery hands out a turn, then a drive, until the line is seen,
+ *        and gives up once the pattern is exhausted.
+ */
+static void test_recovery (void)
+{
+    car_avoid_action_t action = CAR_AVOID_STOP;
+    uint16_t           amount = 0u;
+    uint32_t           index  = 0u;
+
     assert(CAR_OK == scan_recover_start(false));
     assert(CAR_ERR_NO_DATA == scan_recover_line());
     assert(CAR_OK == scan_recover_get_step(&action, &amount));
@@ -124,14 +175,62 @@ int main (void)
     /* Never seeing the line exhausts the pattern. */
     assert(CAR_OK == scan_recover_start(true));
 
-    for (index = 0u; index < (2u * SCAN_RECOVER_STEPS); index++)
+    for (index = 0u; index < TEST_RECOVER_CALLS; index++)
     {
         assert(CAR_ERR_NO_DATA == scan_recover_line());
     }
 
     assert(CAR_ERR_TIMEOUT == scan_recover_line());
+}
 
-    return 0;
+/**
+ * @brief The detour legs turn the right way, undo in reverse, and grow
+ *        with the obstacle within their limits.
+ */
+static void test_detour (void)
+{
+    car_obstacle_profile_t profile = { 0 };
+    car_avoid_action_t     action  = CAR_AVOID_STOP;
+    uint16_t               amount  = 0u;
+
+    assert(CAR_OK == scan_detour_plan(NULL));
+    assert(CAR_ERR_RANGE == scan_detour_get_leg(SCAN_DETOUR_LEGS,
+                                                CAR_AVOID_LEFT, false,
+                                                &action, &amount));
+    assert(CAR_ERR_RANGE == scan_detour_get_leg(0u, CAR_AVOID_LEFT, false,
+                                                NULL, &amount));
+
+    /* Round the left: turn left first, and right to undo it. */
+    assert(CAR_OK == scan_detour_get_leg(0u, CAR_AVOID_LEFT, false,
+                                         &action, &amount));
+    assert((CAR_AVOID_LEFT == action) && (SCAN_DETOUR_TURN_DEG == amount));
+    assert(CAR_OK == scan_detour_get_leg(0u, CAR_AVOID_LEFT, true,
+                                         &action, &amount));
+    assert(CAR_AVOID_RIGHT == action);
+
+    /* Turning back toward the obstacle goes the other way. */
+    assert(CAR_OK == scan_detour_get_leg(2u, CAR_AVOID_RIGHT, false,
+                                         &action, &amount));
+    assert(CAR_AVOID_LEFT == action);
+
+    /* Drives go forward, and back to undo. No width: the fixed legs. */
+    assert(CAR_OK == scan_detour_get_leg(1u, CAR_AVOID_LEFT, false,
+                                         &action, &amount));
+    assert((CAR_AVOID_CONTINUE == action) && (SCAN_DETOUR_SIDE_MM == amount));
+    assert(CAR_OK == scan_detour_get_leg(3u, CAR_AVOID_LEFT, true,
+                                         &action, &amount));
+    assert((CAR_AVOID_REVERSE == action) && (SCAN_DETOUR_DEPTH_MM == amount));
+
+    /* 300 mm wide: a longer sideways leg, and a depth past its limit. */
+    profile.width_mm = 300u;
+    assert(CAR_OK == scan_detour_plan(&profile));
+    assert(CAR_OK == scan_detour_get_leg(5u, CAR_AVOID_LEFT, false,
+                                         &action, &amount));
+    assert((amount > SCAN_DETOUR_SIDE_MM)
+           && (amount < SCAN_DETOUR_SIDE_MAX_MM));
+    assert(CAR_OK == scan_detour_get_leg(3u, CAR_AVOID_LEFT, false,
+                                         &action, &amount));
+    assert(SCAN_DETOUR_DEPTH_MAX_MM == amount);
 }
 
 /*** end of file ***/

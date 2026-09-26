@@ -4,7 +4,7 @@ Owner: Buddy 5, ultrasonic scanning and obstacle profiling.
 
 Owns the scan servo, HC-SR04 ranging, coarse and fine scans, obstacle
 profiling, avoidance planning and the line recovery search pattern. API is
-`include/scanning.h`. Knobs are `SONAR_*`, `SERVO_*` and `SCAN_*` in
+`include/scan.h`. Knobs are `SONAR_*`, `SERVO_*` and `SCAN_*` in
 `common/car_config.h`. Read the notes in the header before wiring.
 
 Implemented. The module runs at 3.3 V from the Grove port, so the echo
@@ -36,7 +36,7 @@ while the horn still moves freely and does not buzz against a stop.
 A servo reports nothing about where it is. The firmware cannot know the
 horn's position until it sends a pulse, and the horn then jumps to whatever
 that pulse says. So the first pulse after power on is the one large
-movement the car ever makes, and how large is simply the gap between where
+movement the car ever makes, and how large is the gap between where
 the horn was left and `SERVO_CENTRE_PULSE_USEC`.
 
 That is the whole explanation for a horn that swings a long way at startup
@@ -89,7 +89,7 @@ A fine scan steps 5 degrees, half the sweep, so it reads at 80, 85, 90, 95
 and 100. That is five rangings at the datasheet's 60 millisecond minimum,
 so 300 milliseconds standing still, plus servo settle per move.
 
-Two consequences worth knowing, both of which ease as the sweep widens:
+Two consequences, both smaller with a wider sweep:
 
 **Neighbouring readings are not independent.** The sonar's beam is about
 15 degrees across. The two extremes, 20 degrees apart, just clear one beam

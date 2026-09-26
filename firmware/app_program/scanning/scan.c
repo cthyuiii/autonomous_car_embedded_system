@@ -1,4 +1,4 @@
-/** @file scanning.c
+/** @file scan.c
  *
  * @brief Servo sweep, HC-SR04 ranging, profiling, planning and recovery.
  *
@@ -9,23 +9,22 @@
  * compare level is simply the pulse width in microseconds and the wrap is
  * the 20 ms frame of a 50 Hz servo.
  *
- * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. Implement the
- * TODOs in this file. It is yours.
+ * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. This file is
+ * yours.
  */
 
-#include "scanning.h"
+#include "scan.h"
 
 #ifdef CAR_HOST_TEST
 #include <stddef.h>
 #else
 #include <tk/tkernel.h>
-#include <bsp/libbsp.h>
 #include "car_hw.h"
 #endif
 
 #include "car_config.h"
+#include "car_log.h"
 
-#define SCAN_STRAIGHT_AHEAD_DEG       SCAN_CENTRE_ANGLE_DEG
 #define SCAN_ANGLE_UNKNOWN            0xFFFFu
 #define SCAN_FINE_MAX_READINGS ((SERVO_TRAVEL_DEG / SCAN_FINE_STEP_DEG) + 2u)
 #define SCAN_MILLI_RAD_PER_DEG        17453u
@@ -42,18 +41,43 @@
  * turns that into a bounded delay and a timeout instead of a dead car. */
 #define SONAR_SPIN_LIMIT              2000000u
 
+/** One leg of the box detour. */
+typedef struct
+{
+    bool     b_turn;        /* true turns, false drives forward */
+    bool     b_away;        /* turn away from the obstacle, else toward */
+    uint16_t amount;        /* degrees or mm */
+} detour_leg_t;
+
 static uint16_t const g_coarse_angles_deg[SCAN_COARSE_ANGLE_COUNT] =
     SCAN_COARSE_ANGLES_DEG;
 
+/* Turn away, step sideways, turn back, pass the obstacle, turn in, step
+ * back, turn straight. scan_detour_plan() sizes legs 1, 3 and 5. */
+static detour_leg_t g_detour[SCAN_DETOUR_LEGS] =
+{
+    { true,  true,  SCAN_DETOUR_TURN_DEG },
+    { false, false, SCAN_DETOUR_SIDE_MM },
+    { true,  false, SCAN_DETOUR_TURN_DEG },
+    { false, false, SCAN_DETOUR_DEPTH_MM },
+    { true,  false, SCAN_DETOUR_TURN_DEG },
+    { false, false, SCAN_DETOUR_SIDE_MM },
+    { true,  true,  SCAN_DETOUR_TURN_DEG },
+};
+
 static uint16_t           g_last_angle_deg  = SCAN_ANGLE_UNKNOWN;
 static uint32_t           g_last_ping_usec  = 0u;
-static bool               g_search_left     = true;
-static bool               g_line_seen       = false;
+static bool               gb_search_left     = true;
+static bool               gb_line_seen       = false;
 static uint8_t            g_recover_index   = 0u;
 static car_avoid_action_t g_step_action     = CAR_AVOID_STOP;
 static uint16_t           g_step_amount     = 0u;
 
+static void         profile_run (uint16_t const * p_ranges, uint8_t count,
+                                 uint8_t nearest, uint16_t start_deg,
+                                 car_obstacle_profile_t * p_profile);
 static uint16_t     servo_pulse_usec (uint16_t angle_deg);
+static uint16_t     clamp_mm (uint32_t value, uint16_t low, uint16_t high);
 static void         hw_init (void);
 static void         hw_set_servo (uint16_t angle_deg);
 static car_status_t hw_ping (uint16_t * p_range_mm);
@@ -62,20 +86,17 @@ static uint32_t     hw_usec (void);
 
 car_status_t scan_init (void)
 {
-    // TODO: pwm_set_pin(SERVO_PIN) with a wrap for SERVO_PWM_FREQ_HZ,
-    //       gpio_set_pin() the trigger as GPIO_MODE_OUT and the echo as
-    //       GPIO_MODE_IN, then centre the servo.
     g_last_angle_deg = SCAN_ANGLE_UNKNOWN;
     g_last_ping_usec = 0u;
     g_recover_index  = 0u;
-    g_line_seen      = false;
-    g_search_left    = true;
+    gb_line_seen      = false;
+    gb_search_left    = true;
     g_step_action    = CAR_AVOID_STOP;
     g_step_amount    = 0u;
 
     hw_init();
-    hw_set_servo(SCAN_STRAIGHT_AHEAD_DEG);
-    g_last_angle_deg = SCAN_STRAIGHT_AHEAD_DEG;
+    hw_set_servo(SCAN_CENTRE_ANGLE_DEG);
+    g_last_angle_deg = SCAN_CENTRE_ANGLE_DEG;
     hw_delay_msec(SERVO_SETTLE_MSEC);
 
     return CAR_OK;
@@ -83,11 +104,6 @@ car_status_t scan_init (void)
 
 car_status_t scan_measure (uint16_t angle_deg, uint16_t * p_range_mm)
 {
-    // TODO: Map angle to a pulse between SERVO_PULSE_MIN_USEC and
-    //       SERVO_PULSE_MAX_USEC, tk_dly_tsk(SERVO_SETTLE_MSEC), pulse
-    //       the trigger for SONAR_TRIG_PULSE_USEC, time the echo high
-    //       by reading TIMER_TIMELW from sysdef.h with a
-    //       SONAR_ECHO_TIMEOUT_USEC cap, and convert to mm.
     car_status_t status = CAR_ERR_RANGE;
 
     if ((NULL != p_range_mm) && (angle_deg <= SERVO_TRAVEL_DEG))
@@ -133,14 +149,12 @@ car_status_t scan_measure (uint16_t angle_deg, uint16_t * p_range_mm)
 
 car_status_t scan_coarse (car_obstacle_profile_t * p_profile)
 {
-    // TODO: scan_measure() each entry of g_coarse_angles_deg, keep the
-    //       nearest, and mark valid if within SCAN_OBSTACLE_RANGE_MM.
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_profile)
     {
         uint16_t nearest_mm  = SONAR_MAX_RANGE_MM;
-        uint16_t nearest_deg = SCAN_STRAIGHT_AHEAD_DEG;
+        uint16_t nearest_deg = SCAN_CENTRE_ANGLE_DEG;
         uint8_t  index       = 0u;
         int32_t  bearing     = 0;
 
@@ -157,7 +171,8 @@ car_status_t scan_coarse (car_obstacle_profile_t * p_profile)
             }
         }
 
-        bearing    = (int32_t)nearest_deg - (int32_t)SCAN_STRAIGHT_AHEAD_DEG;
+        /* Casts: angles are 0 to 180, exact as int32_t. */
+        bearing    = (int32_t)nearest_deg - (int32_t)SCAN_CENTRE_ANGLE_DEG;
         *p_profile = (car_obstacle_profile_t){ 0 };
         p_profile->bearing_deg      = (int16_t)bearing;
         p_profile->closest_range_mm = nearest_mm;
@@ -171,10 +186,6 @@ car_status_t scan_coarse (car_obstacle_profile_t * p_profile)
 car_status_t scan_fine (uint16_t start_deg, uint16_t end_deg,
                         car_obstacle_profile_t * p_profile)
 {
-    // TODO: Step from start_deg to end_deg by SCAN_FINE_STEP_DEG. The
-    //       obstacle is the run of readings below the coarse range;
-    //       width is that run's angular extent times its range, and
-    //       clearance is the free distance either side of the run.
     car_status_t status = CAR_ERR_RANGE;
 
     /* Pull the arc into the travel the mount allows before deciding
@@ -195,12 +206,9 @@ car_status_t scan_fine (uint16_t start_deg, uint16_t end_deg,
         && (end_deg <= SERVO_TRAVEL_DEG))
     {
         uint16_t ranges[SCAN_FINE_MAX_READINGS];
-        uint8_t  count       = 0u;
-        uint8_t  nearest     = 0u;
-        uint8_t  run_start   = 0u;
-        uint8_t  run_end     = 0u;
-        uint8_t  index       = 0u;
-        uint16_t angle_deg   = start_deg;
+        uint8_t  count     = 0u;
+        uint8_t  nearest   = 0u;
+        uint16_t angle_deg = start_deg;
 
         while ((angle_deg <= end_deg) && (count < SCAN_FINE_MAX_READINGS))
         {
@@ -213,6 +221,7 @@ car_status_t scan_fine (uint16_t start_deg, uint16_t end_deg,
             }
 
             count++;
+            /* Cast: at most end_deg plus one step, under 200. */
             angle_deg = (uint16_t)(angle_deg + SCAN_FINE_STEP_DEG);
         }
 
@@ -220,63 +229,7 @@ car_status_t scan_fine (uint16_t start_deg, uint16_t end_deg,
 
         if (ranges[nearest] < SCAN_OBSTACLE_RANGE_MM)
         {
-            uint16_t span_deg = 0u;
-            uint16_t mid_deg  = 0u;
-            int32_t  bearing  = 0;
-
-            /* Grow the run outward from the nearest reading while the
-             * readings still count as obstacle. */
-            run_start = nearest;
-            run_end   = nearest;
-
-            while ((run_start > 0u)
-                   && (ranges[run_start - 1u] < SCAN_OBSTACLE_RANGE_MM))
-            {
-                run_start--;
-            }
-
-            while ((run_end < (count - 1u))
-                   && (ranges[run_end + 1u] < SCAN_OBSTACLE_RANGE_MM))
-            {
-                run_end++;
-            }
-
-            span_deg = (uint16_t)(((run_end - run_start) + 1u)
-                                  * SCAN_FINE_STEP_DEG);
-            mid_deg  = (uint16_t)(start_deg
-                                  + (((uint16_t)run_start * SCAN_FINE_STEP_DEG
-                                      + (uint16_t)run_end * SCAN_FINE_STEP_DEG)
-                                     / 2u));
-
-            bearing = (int32_t)mid_deg - (int32_t)SCAN_STRAIGHT_AHEAD_DEG;
-            p_profile->bearing_deg      = (int16_t)bearing;
-            p_profile->closest_range_mm = ranges[nearest];
-            p_profile->width_mm         = (uint16_t)(((uint32_t)ranges[nearest]
-                                                      * span_deg
-                                                      * SCAN_MILLI_RAD_PER_DEG)
-                                                     / 1000000u);
-
-            /* Lower angles look to the right, higher to the left. A side
-             * with no readings beyond the run is unknown, reported as 0. */
-            for (index = 0u; index < run_start; index++)
-            {
-                if ((0u == p_profile->clearance_right_mm)
-                    || (ranges[index] < p_profile->clearance_right_mm))
-                {
-                    p_profile->clearance_right_mm = ranges[index];
-                }
-            }
-
-            for (index = (uint8_t)(run_end + 1u); index < count; index++)
-            {
-                if ((0u == p_profile->clearance_left_mm)
-                    || (ranges[index] < p_profile->clearance_left_mm))
-                {
-                    p_profile->clearance_left_mm = ranges[index];
-                }
-            }
-
-            p_profile->b_is_valid = true;
+            profile_run(ranges, count, nearest, start_deg, p_profile);
         }
 
         status = CAR_OK;
@@ -285,11 +238,83 @@ car_status_t scan_fine (uint16_t start_deg, uint16_t end_deg,
     return status;
 }
 
+/**
+ * @brief Profile the obstacle from the run of close readings around the
+ *        nearest one.
+ *
+ * @param[in]  p_ranges  Fine scan readings, lowest angle first.
+ * @param[in]  count     How many readings there are.
+ * @param[in]  nearest   Index of the closest, known to be an obstacle.
+ * @param[in]  start_deg Angle of the first reading.
+ * @param[out] p_profile Filled in. A side with no readings beyond the run
+ *                       is unknown and its clearance stays 0.
+ */
+static void profile_run (uint16_t const * p_ranges, uint8_t count,
+                         uint8_t nearest, uint16_t start_deg,
+                         car_obstacle_profile_t * p_profile)
+{
+    uint8_t  run_start = nearest;
+    uint8_t  run_end   = nearest;
+    uint8_t  index     = 0u;
+    uint16_t span_deg  = 0u;
+    uint16_t mid_deg   = 0u;
+
+    /* Grow the run outward from the nearest reading while the readings
+     * still count as obstacle. */
+    while ((run_start > 0u)
+           && (p_ranges[run_start - 1u] < SCAN_OBSTACLE_RANGE_MM))
+    {
+        run_start--;
+    }
+
+    while ((run_end < (count - 1u))
+           && (p_ranges[run_end + 1u] < SCAN_OBSTACLE_RANGE_MM))
+    {
+        run_end++;
+    }
+
+    /* Casts: indexes are under SCAN_FINE_MAX_READINGS and angles under
+     * 180, so every angle fits a uint16_t and an int16_t, and a range
+     * of at most SONAR_MAX_RANGE_MM times a span in milliradians fits a
+     * uint32_t. */
+    span_deg = (uint16_t)(((run_end - run_start) + 1u) * SCAN_FINE_STEP_DEG);
+    mid_deg  = (uint16_t)(start_deg
+                          + ((((uint16_t)run_start + (uint16_t)run_end)
+                              * SCAN_FINE_STEP_DEG) / 2u));
+    p_profile->bearing_deg      = (int16_t)((int32_t)mid_deg
+                                            - (int32_t)SCAN_CENTRE_ANGLE_DEG);
+    p_profile->closest_range_mm = p_ranges[nearest];
+    p_profile->width_mm         = (uint16_t)(((uint32_t)p_ranges[nearest]
+                                              * span_deg
+                                              * SCAN_MILLI_RAD_PER_DEG)
+                                             / 1000000u);
+
+    /* Lower angles look to the right, higher to the left. */
+    for (index = 0u; index < run_start; index++)
+    {
+        if ((0u == p_profile->clearance_right_mm)
+            || (p_ranges[index] < p_profile->clearance_right_mm))
+        {
+            p_profile->clearance_right_mm = p_ranges[index];
+        }
+    }
+
+    /* Cast: run_end is below count, itself a uint8_t. */
+    for (index = (uint8_t)(run_end + 1u); index < count; index++)
+    {
+        if ((0u == p_profile->clearance_left_mm)
+            || (p_ranges[index] < p_profile->clearance_left_mm))
+        {
+            p_profile->clearance_left_mm = p_ranges[index];
+        }
+    }
+
+    p_profile->b_is_valid = true;
+}
+
 car_status_t scan_plan_avoidance (car_obstacle_profile_t const * p_profile,
                                   car_avoid_action_t * p_action)
 {
-    // TODO: If not valid, CONTINUE. Else pick the side whose clearance
-    //       exceeds SCAN_CLEARANCE_MIN_MM by the most, else REVERSE.
     car_status_t status = CAR_ERR_RANGE;
 
     if ((NULL != p_profile) && (NULL != p_action))
@@ -304,7 +329,7 @@ car_status_t scan_plan_avoidance (car_obstacle_profile_t const * p_profile,
             *p_action = CAR_AVOID_CONTINUE;
         }
         else if (b_left_ok
-                 && (!b_right_ok
+                 && ((!b_right_ok)
                      || (p_profile->clearance_left_mm
                          >= p_profile->clearance_right_mm)))
         {
@@ -327,8 +352,8 @@ car_status_t scan_plan_avoidance (car_obstacle_profile_t const * p_profile,
 
 car_status_t scan_recover_start (bool b_search_left)
 {
-    g_search_left   = b_search_left;
-    g_line_seen     = false;
+    gb_search_left   = b_search_left;
+    gb_line_seen     = false;
     g_recover_index = 0u;
     g_step_action   = CAR_AVOID_STOP;
     g_step_amount   = 0u;
@@ -338,19 +363,16 @@ car_status_t scan_recover_start (bool b_search_left)
 
 car_status_t scan_recover_report (bool b_line_seen)
 {
-    g_line_seen = b_line_seen;
+    gb_line_seen = b_line_seen;
 
     return CAR_OK;
 }
 
 car_status_t scan_recover_line (void)
 {
-    // TODO: Arc back toward the original heading in fixed steps and ask the
-    //       line module for a reading after each. Return CAR_OK on a hit,
-    //       CAR_ERR_TIMEOUT when the pattern is exhausted.
     car_status_t status = CAR_ERR_NO_DATA;
 
-    if (g_line_seen)
+    if (gb_line_seen)
     {
         g_step_action = CAR_AVOID_STOP;
         g_step_amount = 0u;
@@ -368,7 +390,7 @@ car_status_t scan_recover_line (void)
          * the car arcs across where the line should be. */
         if (0u == (g_recover_index % 2u))
         {
-            g_step_action = g_search_left ? CAR_AVOID_LEFT : CAR_AVOID_RIGHT;
+            g_step_action = gb_search_left ? CAR_AVOID_LEFT : CAR_AVOID_RIGHT;
             g_step_amount = SCAN_RECOVER_TURN_DEG;
         }
         else
@@ -398,6 +420,92 @@ car_status_t scan_recover_get_step (car_avoid_action_t * p_action,
     return status;
 }
 
+car_status_t scan_detour_plan (car_obstacle_profile_t const * p_profile)
+{
+    uint16_t side_mm  = SCAN_DETOUR_SIDE_MM;
+    uint16_t depth_mm = SCAN_DETOUR_DEPTH_MM;
+
+    if ((NULL != p_profile) && (0u != p_profile->width_mm))
+    {
+        /* Cast: widening a uint16_t. */
+        uint32_t clear = ((uint32_t)p_profile->width_mm / 2u)
+                         + SCAN_DETOUR_MARGIN_MM;
+
+        side_mm  = clamp_mm((clear * SCAN_DETOUR_SIN45_RECIP) / 1000u,
+                            SCAN_DETOUR_SIDE_MIN_MM,
+                            SCAN_DETOUR_SIDE_MAX_MM);
+        /* Width stands in for depth, because the sonar cannot see how far
+         * back an obstacle goes. CAR_LENGTH_MM is on top of it: the back
+         * of the car is still beside the obstacle when the bumper is past
+         * it, and turning in there clips it. */
+        depth_mm = clamp_mm((uint32_t)p_profile->width_mm + CAR_LENGTH_MM
+                            + SCAN_DETOUR_MARGIN_MM,
+                            SCAN_DETOUR_DEPTH_MIN_MM,
+                            SCAN_DETOUR_DEPTH_MAX_MM);
+    }
+
+    g_detour[1].amount = side_mm;
+    g_detour[3].amount = depth_mm;
+    g_detour[5].amount = side_mm;
+
+    CAR_LOG(CAR_LOG_INFO, "detour sized for %u mm wide: side %u depth %u\n",
+            (NULL != p_profile) ? p_profile->width_mm : 0u, side_mm,
+            depth_mm);
+
+    return CAR_OK;
+}
+
+car_status_t scan_detour_get_leg (uint8_t index, car_avoid_action_t side,
+                                  bool b_undo, car_avoid_action_t * p_action,
+                                  uint16_t * p_amount)
+{
+    car_status_t status = CAR_ERR_RANGE;
+
+    if ((index < SCAN_DETOUR_LEGS) && (NULL != p_action)
+        && (NULL != p_amount))
+    {
+        detour_leg_t const * p_leg = &g_detour[index];
+
+        if (p_leg->b_turn)
+        {
+            /* Away from the obstacle turns toward the detour side. A turn
+             * back toward it goes the other way, and undoing a turn
+             * flips it again. */
+            bool b_left = ((CAR_AVOID_LEFT == side) == p_leg->b_away);
+
+            *p_action = (b_left != b_undo) ? CAR_AVOID_LEFT
+                                           : CAR_AVOID_RIGHT;
+        }
+        else
+        {
+            *p_action = b_undo ? CAR_AVOID_REVERSE : CAR_AVOID_CONTINUE;
+        }
+
+        *p_amount = p_leg->amount;
+        status    = CAR_OK;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Hold a value inside a range.
+ *
+ * @param[in] value What to clamp.
+ * @param[in] low   Lowest allowed.
+ * @param[in] high  Highest allowed.
+ *
+ * @return The clamped value.
+ */
+static uint16_t clamp_mm (uint32_t value, uint16_t low, uint16_t high)
+{
+    uint32_t held = (value < low) ? low : value;
+
+    held = (held > high) ? high : held;
+
+    return (uint16_t)held;   /* Cast: between low and high, both uint16_t */
+}
+
 /**
  * @brief Servo pulse width for an angle, measured from the mounted centre.
  *
@@ -413,10 +521,12 @@ car_status_t scan_recover_get_step (car_avoid_action_t * p_action,
  */
 static uint16_t servo_pulse_usec (uint16_t angle_deg)
 {
+    /* Casts: angles and pulse widths are under 3000, exact as int32_t. */
     int32_t offset = (int32_t)angle_deg - (int32_t)SCAN_CENTRE_ANGLE_DEG;
     int32_t pulse  = (int32_t)SERVO_CENTRE_PULSE_USEC
                      + (offset * (int32_t)SERVO_USEC_PER_DEG);
 
+    /* Casts: the pulse limits are constants under 3000. */
     if (pulse < (int32_t)SERVO_PULSE_MIN_USEC)
     {
         pulse = (int32_t)SERVO_PULSE_MIN_USEC;
@@ -430,7 +540,7 @@ static uint16_t servo_pulse_usec (uint16_t angle_deg)
         /* Inside the servo's accepted range. */
     }
 
-    return (uint16_t)pulse;
+    return (uint16_t)pulse;   /* Clamped to the servo's range above */
 }
 
 #ifdef CAR_HOST_TEST
@@ -492,9 +602,9 @@ static void hw_init (void)
     car_hw_enable_pwm();
     car_hw_enable_timer();
     car_hw_pwm_setup(SERVO_PIN, SERVO_CLOCK_DIVIDER, SERVO_FRAME_USEC - 1u);
-    (void)gpio_set_pin(SONAR_TRIG_PIN, GPIO_MODE_OUT);
-    (void)gpio_set_val(SONAR_TRIG_PIN, 0u);
-    (void)gpio_set_pin(SONAR_ECHO_PIN, GPIO_MODE_IN);
+    car_hw_gpio_output(SONAR_TRIG_PIN);
+    car_hw_gpio_put(SONAR_TRIG_PIN, false);
+    car_hw_gpio_input(SONAR_ECHO_PIN);
 }
 
 static void hw_set_servo (uint16_t angle_deg)
@@ -521,9 +631,9 @@ static car_status_t hw_ping (uint16_t * p_range_mm)
 
     *p_range_mm = SONAR_MAX_RANGE_MM;
 
-    (void)gpio_set_val(SONAR_TRIG_PIN, 1u);
+    car_hw_gpio_put(SONAR_TRIG_PIN, true);
     WaitUsec(SONAR_TRIG_PULSE_USEC);
-    (void)gpio_set_val(SONAR_TRIG_PIN, 0u);
+    car_hw_gpio_put(SONAR_TRIG_PIN, false);
 
     started = car_hw_usec();
 
@@ -534,7 +644,7 @@ static car_status_t hw_ping (uint16_t * p_range_mm)
             break;
         }
 
-        if (0u != gpio_get_val(SONAR_ECHO_PIN))
+        if (car_hw_gpio_get(SONAR_ECHO_PIN))
         {
             b_rose = true;
             rise   = car_hw_usec();
@@ -549,7 +659,7 @@ static car_status_t hw_ping (uint16_t * p_range_mm)
             break;
         }
 
-        if (0u == gpio_get_val(SONAR_ECHO_PIN))
+        if (!car_hw_gpio_get(SONAR_ECHO_PIN))
         {
             b_fell = true;
             fall   = car_hw_usec();
@@ -571,7 +681,7 @@ static car_status_t hw_ping (uint16_t * p_range_mm)
             range_mm = SONAR_MAX_RANGE_MM;
         }
 
-        *p_range_mm = (uint16_t)range_mm;
+        *p_range_mm = (uint16_t)range_mm;   /* Clamped to the max above */
         status      = CAR_OK;
     }
 
@@ -580,7 +690,7 @@ static car_status_t hw_ping (uint16_t * p_range_mm)
 
 static void hw_delay_msec (uint32_t msec)
 {
-    (void)tk_dly_tsk((RELTIM)msec);
+    (void)tk_dly_tsk((RELTIM)msec);   /* RELTIM is 32 bit, as msec is */
 }
 
 static uint32_t hw_usec (void)

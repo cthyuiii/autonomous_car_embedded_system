@@ -1,6 +1,17 @@
 /** @file car_hw.h
  *
- * @brief Board level helpers shared by the modules that touch RP2040 blocks.
+ * @brief The RP2040 hardware our code drives, through the Pico C SDK.
+ *
+ * Every register access in our code goes through here, and car_hw.c does
+ * it with the Pico C SDK's hardware API. Only the SDK's header-only parts
+ * are used: the register structs and the inline gpio, pwm and reset
+ * helpers. The kernel keeps what it owns: interrupt registration, task
+ * timing and its device drivers, I2C among them.
+ *
+ * NOTE: car_hw.c cannot include a kernel header: the kernel and the SDK
+ * each define size_t and the block base addresses. So this header uses
+ * only standard types, and the one helper that needs the kernel, the
+ * millisecond clock, lives in car_time.h.
  *
  * NOTE: The kernel releases only the blocks it uses from reset. The PWM and
  * TIMER blocks are still held in reset when usermain() runs, so every
@@ -11,12 +22,13 @@
  * Target only. Host tests never compile this file; a module includes it
  * inside #ifndef CAR_HOST_TEST and keeps its own fake for the host.
  *
- * Owner: the team. Extend only with helpers that two modules share.
+ * Owner: the team.
  */
 
 #ifndef CAR_HW_H
 #define CAR_HW_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /** System clock the PWM slices count, set by the kernel's clock setup. */
@@ -44,11 +56,11 @@ void car_hw_enable_timer (void);
 uint32_t car_hw_usec (void);
 
 /**
- * @brief Read the kernel's operating time.
+ * @brief Make a pin a digital input, leaving its pulls as they are.
  *
- * @return Milliseconds since the kernel started.
+ * @param[in] pin GPIO number.
  */
-uint32_t car_hw_msec (void);
+void car_hw_gpio_input (uint32_t pin);
 
 /**
  * @brief Make a pin a digital input with the pull up on and pull down off.
@@ -70,6 +82,84 @@ void car_hw_gpio_input_pullup (uint32_t pin);
  * @param[in] pin GPIO number.
  */
 void car_hw_gpio_input_pulldown (uint32_t pin);
+
+/**
+ * @brief Make a pin a digital output.
+ *
+ * @param[in] pin GPIO number.
+ */
+void car_hw_gpio_output (uint32_t pin);
+
+/**
+ * @brief Read a pin.
+ *
+ * @param[in] pin GPIO number.
+ *
+ * @return true while the pin is high.
+ */
+bool car_hw_gpio_get (uint32_t pin);
+
+/**
+ * @brief Drive an output pin.
+ *
+ * @param[in] pin    GPIO number set up with car_hw_gpio_output().
+ * @param[in] b_high true drives it high.
+ */
+void car_hw_gpio_put (uint32_t pin, bool b_high);
+
+/**
+ * @brief Route a pin to its I2C block, with the pad set up the way the
+ *        kernel's I2C driver sets up its own pins.
+ *
+ * @param[in] pin GPIO number.
+ */
+void car_hw_gpio_i2c (uint32_t pin);
+
+/**
+ * @brief Whether a pin is routed to an I2C block.
+ *
+ * @param[in] pin GPIO number.
+ *
+ * @return true if its function is I2C.
+ */
+bool car_hw_gpio_is_i2c (uint32_t pin);
+
+/**
+ * @brief Latch rising edges on a pin for processor 0's IO_BANK0 interrupt.
+ *
+ * Clears an edge latched while the pin was being set up first. The
+ * interrupt itself is registered with the kernel by the caller.
+ *
+ * @param[in] pin GPIO number.
+ */
+void car_hw_gpio_rise_irq_enable (uint32_t pin);
+
+/**
+ * @brief Take a latched rising edge on a pin, if there is one.
+ *
+ * @param[in] pin GPIO number set up with car_hw_gpio_rise_irq_enable().
+ *
+ * @return true if an edge was pending; it is cleared.
+ */
+bool car_hw_gpio_rise_irq_take (uint32_t pin);
+
+/**
+ * @brief Enable a TIMER alarm's interrupt and arm it.
+ *
+ * The interrupt itself is registered with the kernel by the caller.
+ *
+ * @param[in] alarm      Alarm number, 0 to 3.
+ * @param[in] delay_usec Time from now until it fires.
+ */
+void car_hw_alarm_start (uint32_t alarm, uint32_t delay_usec);
+
+/**
+ * @brief From an alarm's interrupt: acknowledge it and arm it again.
+ *
+ * @param[in] alarm      Alarm number, 0 to 3.
+ * @param[in] delay_usec Time from now until it next fires.
+ */
+void car_hw_alarm_rearm (uint32_t alarm, uint32_t delay_usec);
 
 /**
  * @brief Route a pin to its PWM slice and start the slice.

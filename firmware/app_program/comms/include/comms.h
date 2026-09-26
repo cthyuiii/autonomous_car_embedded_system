@@ -16,7 +16,7 @@
 
 #include <stdbool.h>
 
-#include "car_types.h"
+#include "car.h"
 
 /** Called from comms_poll() when a command arrives on COMMS_TOPIC_COMMAND. */
 typedef void (*comms_command_handler_t)(car_nav_command_t command);
@@ -56,6 +56,19 @@ bool comms_is_connected (void);
  * @return CAR_OK if queued, CAR_ERR_TIMEOUT if not connected.
  */
 car_status_t comms_publish_telemetry (car_telemetry_t const * p_telemetry);
+
+/**
+ * @brief Publish the terrain analysis status on COMMS_TOPIC_TERRAIN.
+ *
+ * The IMU half of the snapshot, with the motion event by name and the
+ * humps counted, for imu_terrain/terrain_report.md.
+ *
+ * @param[in] p_telemetry Snapshot to serialise, must not be NULL.
+ *
+ * @return CAR_OK if queued, CAR_ERR_TIMEOUT if not connected, or
+ *         CAR_ERR_RANGE if p_telemetry is NULL.
+ */
+car_status_t comms_publish_terrain (car_telemetry_t const * p_telemetry);
 
 /**
  * @brief Register the function that receives remote navigation commands.

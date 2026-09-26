@@ -4,17 +4,16 @@
  *
  * This is the only file that includes all five subsystem headers. Anything
  * one subsystem needs from another flows through here, or through the
- * types in car_types.h, never by one module including another.
+ * types in car.h, never by one module including another.
  *
- * NOTE: One task per periodic subsystem, each pacing itself with
- * tk_dly_tsk(). The kernel tick is CNF_TIMER_PERIOD in config/config.h,
- * 10 ms as shipped, and a delay rounds up to the next tick. Lower the tick
- * if a loop must run faster than that.
+ * NOTE: One task per periodic subsystem. The four control loops run once
+ * per kernel tick, 10 ms, woken by car_time_wait_tick(); a kernel delay
+ * would run them every 20 ms. Comms paces itself off the clock.
  *
  * NOTE: Every public getter below is called from a task other than the one
  * that updates its module, so each module must make its getters safe: copy
  * the value inside a short DI()/EI() section or under a mutex. The
- * telemetry struct in this file is protected by g_telemetry_mutex as the
+ * telemetry struct in this file is protected by gh_telemetry_mutex as the
  * worked example. Kernel types (INT, ID, ER, UB) appear only where the
  * kernel API requires them.
  *
@@ -34,14 +33,14 @@
 #include <tk/tkernel.h>
 
 #include "car_config.h"
-#include "car_hw.h"
 #include "car_log.h"
-#include "car_types.h"
+#include "car_time.h"
+#include "car.h"
 #include "comms.h"
-#include "imu_terrain.h"
-#include "line_barcode.h"
+#include "imu.h"
+#include "line.h"
 #include "motion.h"
-#include "scanning.h"
+#include "scan.h"
 
 /* Priorities: a lower number runs first. Motion outranks everything because
  * a late PID update shows up as a wobble at the wheels. */
@@ -52,74 +51,86 @@
 #define CAR_PRI_COMMS          8
 #define CAR_TASK_STACK_BYTES   4096
 
-#define CAR_STRAIGHT_AHEAD_DEG SCAN_CENTRE_ANGLE_DEG
+/* Every control loop runs once per kernel tick, see car_time.h, so the
+ * periods the modules count in must all be that tick. */
+#if (MOTION_TICK_PERIOD_MSEC != CAR_TIME_TICK_MSEC)                         \
+    || (IMU_SAMPLE_PERIOD_MSEC != CAR_TIME_TICK_MSEC)                       \
+    || (LINE_SAMPLE_PERIOD_MSEC != CAR_TIME_TICK_MSEC)                      \
+    || (CAR_MISSION_PERIOD_MSEC != CAR_TIME_TICK_MSEC)
+#error "A control loop's period differs from the kernel tick"
+#endif
+
 #define CAR_TURN_DEG           90u
-#define CAR_DETOUR_STEPS       7u
-
-/** One leg of the box detour around an obstacle. */
-typedef struct
-{
-    bool     b_turn;        /* true turns, false drives forward */
-    bool     b_away;        /* turn away from the obstacle, else toward */
-    uint16_t amount;        /* degrees or mm */
-} detour_step_t;
-
-/* Turn away, step sideways, turn back, pass the obstacle, turn in, step
- * back, turn straight: a box that ends parallel to the original heading. */
-/* Sized from the obstacle at decision time by plan_detour(), falling
- * back to these when the fine scan measured no width. The shape never
- * changes, only the two distances. */
-static detour_step_t g_detour[CAR_DETOUR_STEPS] =
-{
-    { true,  true,  SCAN_DETOUR_TURN_DEG },
-    { false, false, SCAN_DETOUR_SIDE_MM },
-    { true,  false, SCAN_DETOUR_TURN_DEG },
-    { false, false, SCAN_DETOUR_DEPTH_MM },
-    { true,  false, SCAN_DETOUR_TURN_DEG },
-    { false, false, SCAN_DETOUR_SIDE_MM },
-    { true,  true,  SCAN_DETOUR_TURN_DEG },
-};
 
 static car_mission_state_t g_state           = CAR_STATE_INIT;
-static car_telemetry_t     g_telemetry       = { 0 };
-static ID                  g_telemetry_mutex = 0;
+/* Terrain reads stable until the IMU says otherwise, which with no IMU
+ * fitted is never. */
+static car_telemetry_t     g_telemetry       = { .b_terrain_stable = true };
+static ID                  gh_telemetry_mutex = 0;
 
 /* Which subsystems answered at init. Motion and line are mandatory. */
-static bool g_b_has_imu   = false;
-static bool g_b_has_scan  = false;
-static bool g_b_has_comms = false;
+static bool gb_has_imu   = false;
+static bool gb_has_scan  = false;
+static bool gb_has_comms = false;
 
 /* Single value stores, one writer each, so no lock. line_task writes the
- * error, the seen flag and the junction flag; both line_task and the remote
- * command handler write the pending command; the last whole value written
- * wins, by design. */
+ * error, the sensor mask, the seen flag and the junction flag; both
+ * line_task and the remote command handler write the pending command; the
+ * last whole value written wins, by design. */
 static volatile int16_t           g_line_error          = 0;
-static volatile bool              g_b_line_seen         = false;
-static volatile bool              g_b_junction          = false;
+static volatile uint8_t           g_line_mask           = 0u;
+static volatile bool              gb_line_seen         = false;
+static volatile bool              gb_junction          = false;
 static volatile car_nav_command_t g_pending_nav_command = CAR_NAV_NONE;
 
 /* Line following law state, mission task only. */
-static int16_t  g_prev_error       = 0;
 static int16_t  g_last_side        = 0;    // Last non zero error, to lean to
 static uint32_t g_lost_since_mm    = 0u;
 static uint32_t g_last_sonar_msec  = 0u;
 static uint16_t g_seen_samples     = 0u;
 
-/* Turn execution state, mission task only. */
+/* Coming back onto the line from off it, mission task only. See
+ * reenter_line(). */
+typedef enum
+{
+    REENTRY_OFF = 0,        /* On the line, the normal law steers */
+    REENTRY_SEEK,           /* Off it, heading for it */
+    REENTRY_CROSS,          /* One sensor touched it, straight on */
+    REENTRY_CREEP,          /* Both did, wheels forward over it */
+    REENTRY_SPIN            /* On the spot until it sits between them */
+} reentry_phase_t;
+
+static reentry_phase_t g_reentry          = REENTRY_OFF;
+static uint32_t        g_touch_mm         = 0u;    // Where the first touched
+static bool            gb_spin_left       = false; // Toward the second sensor
+static bool            gb_last_turn_left  = false; // For a square on arrival
+
+/* Junction handling, mission task only. The active command is the last
+ * one read since the previous junction; the junction acts on it. */
+typedef enum
+{
+    JUNCTION_WAIT = 0,      /* Stopped, waiting for a command to arrive */
+    JUNCTION_CREEP,         /* Moving the wheels over the crossing */
+    JUNCTION_TURN           /* Turning onto the new branch */
+} junction_phase_t;
+
 static car_nav_command_t g_active_command    = CAR_NAV_NONE;
-static uint32_t          g_turn_search_start = 0u;
-static bool              g_b_turn_issued     = false;
+static junction_phase_t  g_junction_phase    = JUNCTION_WAIT;
+static uint32_t          g_junction_msec     = 0u;
+/* Cleared on stopping at a junction and set again once both sensors have
+ * left it, so the car does not stop twice at the same crossing. */
+static bool              gb_junction_armed   = true;
 
 /* Obstacle avoidance state, mission task only. */
-static bool               g_b_scan_done      = false;
-static bool               g_b_reversing      = false;
+static bool               gb_scan_done       = false;
+static bool               gb_reversing       = false;
 static uint8_t            g_detour_index     = 0u;
 static car_avoid_action_t g_detour_side      = CAR_AVOID_LEFT;
 
 /* Backing out of a lane that turned out to be blocked. The legs already
  * driven are undone in reverse order, which puts the car back where it
  * started so the other side can be tried from the same place. */
-static bool               g_b_retracing      = false;
+static bool               gb_retracing       = false;
 static uint8_t            g_retrace_index    = 0u;
 static car_avoid_action_t g_probe_side       = CAR_AVOID_LEFT;
 
@@ -135,15 +146,11 @@ static uint32_t           g_follow_start_mm  = 0u;
  * obstacle is just as solid while turning or searching as while following,
  * which is why this is checked outside the switch rather than inside one
  * state. */
-static bool               g_b_obstacle       = false;
+static bool               gb_obstacle        = false;
 
-/* Coarse sweep while driving. The sides are early warning only: nothing
- * steers or plans from them, they go in the log and the telemetry so the
- * decision the fine scan later makes can be read against what the car
- * already knew. */
+/* Coarse sweep while driving: which of centre, right, centre, left the
+ * next ranging looks at. */
 static uint8_t            g_sweep_index      = 0u;
-static uint16_t           g_range_left_mm    = SONAR_MAX_RANGE_MM;
-static uint16_t           g_range_right_mm   = SONAR_MAX_RANGE_MM;
 
 /* Collision handling. A hit outranks every other state, so it is checked
  * outside the switch and can interrupt a detour leg, a turn or a search
@@ -151,13 +158,22 @@ static uint16_t           g_range_right_mm   = SONAR_MAX_RANGE_MM;
  * car is somewhere it cannot drive, and reversing again will not help. */
 static uint8_t            g_collisions       = 0u;
 static uint32_t           g_collision_msec   = 0u;
-static bool               g_b_collision_done = false;
+static bool               gb_collision_done  = false;
+
+/* What the car is doing right now. Worked out by the mission task every
+ * tick, read by the comms task for telemetry. */
+static volatile car_action_t g_action        = CAR_ACTION_STARTING;
+
+/* Set by the motion task when a driven wheel has stopped turning for
+ * MOTION_STALL_FAULT_MSEC: the car is pushing against something, perhaps
+ * too close or too low for the sonar to see. Handled as a hit. */
+static volatile bool      gb_stuck           = false;
 
 /* True once a detour leg has moved the car off the line. Every way out of
  * avoidance then has to go through the search, because the brief allows the
  * bypass to leave the line but requires the line to be reacquired after it.
  * Cleared on entering avoidance, so a plain reverse never sets it. */
-static bool               g_b_off_line       = false;
+static bool               gb_off_line        = false;
 
 static void motion_task (INT stacd, void * p_exinf);
 static void imu_task (INT stacd, void * p_exinf);
@@ -168,26 +184,40 @@ static bool start_task (T_CTSK const * p_ctsk, char const * p_name);
 static bool bring_up (char const * p_name, car_status_t status,
                       bool b_mandatory, bool * p_present);
 static void handle_remote_command (car_nav_command_t command);
+static car_nav_command_t take_command (void);
 static void run_state_machine (void);
 static void enter_state (car_mission_state_t state);
 static void state_follow_line (void);
 static void state_decode_barcode (void);
 static void state_execute_turn (void);
+static void leave_junction (void);
 static void state_avoid_obstacle (void);
+static void watch_detour_leg (void);
+static void scan_and_decide (void);
+static void fine_scan_around (car_obstacle_profile_t * p_profile);
+static void act_on_plan (car_avoid_action_t action,
+                         car_obstacle_profile_t const * p_profile);
+static void next_detour_leg (void);
 static void state_recover_line (void);
+static void take_step (car_avoid_action_t action, uint16_t amount);
 static void state_collision (void);
 static bool steer_along_line (void);
+static bool reenter_line (uint32_t distance);
+static void first_touch (uint8_t line, uint32_t distance);
+static int32_t steer_on_line (uint32_t distance);
+static bool steer_off_line (uint32_t distance, int32_t * p_steer);
 static bool obstacle_ahead (void);
+#if SCAN_SWEEP_WHILE_MOVING
+static bool side_blocked (void);
+#endif
 static bool path_blocked (void);
 static uint16_t terrain_speed (uint16_t level_speed);
-static void issue_detour_step (detour_step_t const * p_step);
-static void undo_detour_step (detour_step_t const * p_step);
-static void plan_detour (car_obstacle_profile_t const * p_profile);
-static uint16_t clamp_mm (uint32_t value, uint16_t low, uint16_t high);
 static void retrace_step (void);
 static car_avoid_action_t other_side (car_avoid_action_t side);
 static uint32_t distance_now (void);
 static void publish_telemetry (void);
+static void publish_terrain (void);
+static car_action_t current_action (void);
 
 static T_CTSK const g_ctsk_motion =
 {
@@ -256,23 +286,29 @@ INT usermain (void)
     bool b_present = false;
 
     CAR_LOG(CAR_LOG_INFO, "car firmware starting\n");
-    g_telemetry_mutex = tk_cre_mtx(&cmtx);
-    b_ok = (0 < g_telemetry_mutex);
+    gh_telemetry_mutex = tk_cre_mtx(&cmtx);
+    b_ok = (0 < gh_telemetry_mutex);
 
-    b_ok = bring_up("motion", motion_init(), true, &b_present) && b_ok;
-    b_ok = bring_up("line", line_init(), true, &b_present) && b_ok;
-    b_ok = bring_up("imu", imu_init(), false, &g_b_has_imu) && b_ok;
-    b_ok = bring_up("scan", scan_init(), false, &g_b_has_scan) && b_ok;
-    b_ok = bring_up("comms", comms_init(), false, &g_b_has_comms) && b_ok;
+    b_ok = (bring_up("motion", motion_init(), true, &b_present)) && b_ok;
+    b_ok = (bring_up("line", line_init(), true, &b_present)) && b_ok;
+    b_ok = (bring_up("imu", imu_init(), false, &gb_has_imu)) && b_ok;
+    b_ok = (bring_up("scan", scan_init(), false, &gb_has_scan)) && b_ok;
+    b_ok = (bring_up("comms", comms_init(), false, &gb_has_comms)) && b_ok;
 
     if (b_ok)
     {
         if (CAR_OK != line_calibrate())
         {
-            CAR_LOG(CAR_LOG_ERROR, "line calibrate failed\n");
+            uint8_t mask = 0u;
+
+            (void)line_get_sensor_mask(&mask);
+            CAR_LOG(CAR_LOG_ERROR, "line sensors %x read dark at the start "
+                    "(1 left, 2 barcode, 4 right): start with the line "
+                    "between left and right, or set that trimpot until "
+                    "its LED is steady over floor\n", mask);
         }
 
-        if (g_b_has_imu && (CAR_OK != imu_calibrate()))
+        if (gb_has_imu && (CAR_OK != imu_calibrate()))
         {
             /* A tilted or moving start is not fatal, just less accurate. */
             CAR_LOG(CAR_LOG_ERROR, "imu calibrate failed, continuing\n");
@@ -290,12 +326,12 @@ INT usermain (void)
     (void)start_task(&g_ctsk_line, "line");
     (void)start_task(&g_ctsk_mission, "mission");
 
-    if (g_b_has_imu)
+    if (gb_has_imu)
     {
         (void)start_task(&g_ctsk_imu, "imu");
     }
 
-    if (g_b_has_comms)
+    if (gb_has_comms)
     {
         (void)start_task(&g_ctsk_comms, "comms");
     }
@@ -307,26 +343,22 @@ INT usermain (void)
 }
 
 /**
- * @brief Run the PID at a fixed rate.
- *
- * ponytail: tk_dly_tsk() drifts by up to one tick per loop. Switch to a
- * cyclic handler that wakes this task with tk_wup_tsk() if the PID needs a
- * period that does not wander.
+ * @brief Run the PID once per kernel tick.
  */
 static void motion_task (INT stacd, void * p_exinf)
 {
     (void)stacd;
     (void)p_exinf;
+    (void)car_time_start_ticks();
 
     for (;;)
     {
         if (CAR_ERR_HARDWARE == motion_tick())
         {
-            CAR_LOG(CAR_LOG_ERROR, "encoder stalled, halting\n");
-            g_state = CAR_STATE_HALTED;
+            gb_stuck = true;
         }
 
-        (void)tk_dly_tsk(MOTION_TICK_PERIOD_MSEC);
+        car_time_wait_tick();
     }
 }
 
@@ -337,6 +369,7 @@ static void imu_task (INT stacd, void * p_exinf)
 {
     (void)stacd;
     (void)p_exinf;
+    (void)car_time_start_ticks();
 
     for (;;)
     {
@@ -349,7 +382,7 @@ static void imu_task (INT stacd, void * p_exinf)
         }
 
         (void)imu_update();
-        (void)tk_dly_tsk(IMU_SAMPLE_PERIOD_MSEC);
+        car_time_wait_tick();
     }
 }
 
@@ -360,10 +393,12 @@ static void line_task (INT stacd, void * p_exinf)
 {
     (void)stacd;
     (void)p_exinf;
+    (void)car_time_start_ticks();
 
     for (;;)
     {
         int16_t           error   = 0;
+        uint8_t           mask    = 0u;
         car_nav_command_t command = CAR_NAV_NONE;
         car_status_t      status  = line_get_position(&error);
 
@@ -372,30 +407,34 @@ static void line_task (INT stacd, void * p_exinf)
             g_line_error = error;
         }
 
-        g_b_line_seen = (CAR_OK == status);
-        g_b_junction  = line_is_at_junction();
+        (void)line_get_sensor_mask(&mask);
+        g_line_mask  = mask;
+        gb_line_seen = (CAR_OK == status);
+        gb_junction  = line_is_at_junction();
 
-        if (CAR_OK == barcode_poll(&command))
+        if (CAR_OK == line_poll_barcode(&command))
         {
             g_pending_nav_command = command;
         }
 
-        (void)tk_dly_tsk(LINE_SAMPLE_PERIOD_MSEC);
+        car_time_wait_tick();
     }
 }
 
 /**
- * @brief Advance the mission state machine at a fixed rate.
+ * @brief Advance the mission state machine once per kernel tick.
  */
 static void mission_task (INT stacd, void * p_exinf)
 {
     (void)stacd;
     (void)p_exinf;
+    (void)car_time_start_ticks();
 
     for (;;)
     {
         run_state_machine();
-        (void)tk_dly_tsk(CAR_MISSION_PERIOD_MSEC);
+        g_action = current_action();
+        car_time_wait_tick();
     }
 }
 
@@ -409,6 +448,7 @@ static void comms_task (INT stacd, void * p_exinf)
 {
     uint32_t last_telemetry_msec = 0u;
     uint32_t last_heartbeat_msec = 0u;
+    uint32_t last_terrain_msec   = 0u;
 
     (void)stacd;
     (void)p_exinf;
@@ -418,7 +458,7 @@ static void comms_task (INT stacd, void * p_exinf)
         /* Timed off the clock, not by adding up the delay: comms_poll()
          * takes about as long again as the delay itself, so counting
          * nominal periods ran both publishes at half the rate asked for. */
-        uint32_t now = car_hw_msec();
+        uint32_t now = car_time_msec();
 
         (void)comms_poll();
 
@@ -432,6 +472,12 @@ static void comms_task (INT stacd, void * p_exinf)
         {
             (void)comms_publish_heartbeat();
             last_heartbeat_msec = now;
+        }
+
+        if ((now - last_terrain_msec) >= CAR_TERRAIN_PERIOD_MSEC)
+        {
+            publish_terrain();
+            last_terrain_msec = now;
         }
 
         (void)tk_dly_tsk(COMMS_POLL_PERIOD_MSEC);
@@ -448,12 +494,12 @@ static void comms_task (INT stacd, void * p_exinf)
  */
 static bool start_task (T_CTSK const * p_ctsk, char const * p_name)
 {
-    ID   tskid     = tk_cre_tsk(p_ctsk);
+    ID   h_task     = tk_cre_tsk(p_ctsk);
     bool b_started = false;
 
-    if (0 < tskid)
+    if (0 < h_task)
     {
-        b_started = (E_OK == tk_sta_tsk(tskid, 0));
+        b_started = (E_OK == tk_sta_tsk(h_task, 0));
     }
 
     if (!b_started)
@@ -485,7 +531,7 @@ static bool bring_up (char const * p_name, car_status_t status,
     {
         CAR_LOG(CAR_LOG_INFO, "%s ready\n", p_name);
     }
-    else if ((CAR_ERR_NOT_IMPLEMENTED == status) && !b_mandatory)
+    else if ((CAR_ERR_NOT_IMPLEMENTED == status) && (!b_mandatory))
     {
         CAR_LOG(CAR_LOG_INFO, "%s absent, continuing without it\n", p_name);
     }
@@ -516,30 +562,44 @@ static void run_state_machine (void)
     /* The scan phase of avoidance is about to sweep the whole arc, so it
      * would only be paying for a reading it is about to take anyway, and a
      * halted car is not going to drive into anything. */
-    bool b_own_look = ((CAR_STATE_AVOID_OBSTACLE == g_state) && !g_b_scan_done);
+    bool b_own_look = ((CAR_STATE_AVOID_OBSTACLE == g_state)
+                       && (!gb_scan_done));
 
     /* Before anything else, and regardless of what the car was doing.
      * Stopping is the only response that is right whatever was hit, and
      * it has to happen in the same tick the hit is seen. */
-    if (g_b_has_imu && imu_is_collision_detected()
-        && (CAR_STATE_COLLISION != g_state)
-        && (CAR_STATE_HALTED != g_state))
     {
-        (void)motion_stop();
-        enter_state(CAR_STATE_COLLISION);
+        bool b_hit   = gb_has_imu && (imu_is_collision_detected());
+        bool b_stuck = gb_stuck;
+
+        gb_stuck = false;
+
+        if ((b_hit || b_stuck) && (CAR_STATE_COLLISION != g_state)
+            && (CAR_STATE_HALTED != g_state))
+        {
+            /* Stuck is treated as a slow hit: stop, back off far enough
+             * for the sonar to see what the car was pushing on, and let
+             * avoidance deal with it, rather than push on blindly. */
+            if (b_stuck)
+            {
+                CAR_LOG(CAR_LOG_ERROR,
+                        "wheels driven but not turning, backing off\n");
+            }
+
+            (void)motion_stop();
+            enter_state(CAR_STATE_COLLISION);
+        }
     }
 
-    if (!b_own_look && (CAR_STATE_HALTED != g_state)
+    if ((!b_own_look) && (CAR_STATE_HALTED != g_state)
         && (CAR_STATE_COLLISION != g_state))
     {
-        g_b_obstacle = obstacle_ahead();
+        gb_obstacle = obstacle_ahead();
     }
 
     switch (g_state)
     {
         case CAR_STATE_INIT:
-            // TODO: Go to FOLLOW_LINE once line_calibrate() and
-            //       imu_calibrate() both return CAR_OK.
             /* Both calibrations ran in usermain() before any task existed,
              * so there is nothing left to wait for. */
             (void)motion_set_speed(CAR_FOLLOW_SPEED_MM_PER_SEC);
@@ -547,38 +607,22 @@ static void run_state_machine (void)
         break;
 
         case CAR_STATE_FOLLOW_LINE:
-            // TODO: Turn g_line_error into a steering correction each
-            //       tick. Go to DECODE_BARCODE when g_pending_nav_command
-            //       is not CAR_NAV_NONE, to AVOID_OBSTACLE when
-            //       scan_coarse() reports a valid profile, to HALTED on
-            //       imu_is_collision_detected().
             state_follow_line();
         break;
 
         case CAR_STATE_DECODE_BARCODE:
-            // TODO: Take g_pending_nav_command, clear it, store it in
-            //       g_telemetry.last_nav_command under the mutex, and go
-            //       to EXECUTE_TURN, or back to FOLLOW_LINE for STRAIGHT.
             state_decode_barcode();
         break;
 
         case CAR_STATE_EXECUTE_TURN:
-            // TODO: Issue motion_turn_left(), motion_turn_right() or a
-            //       180 degree turn once, then go to FOLLOW_LINE when
-            //       motion_is_busy() goes false.
             state_execute_turn();
         break;
 
         case CAR_STATE_AVOID_OBSTACLE:
-            // TODO: scan_fine() around the coarse bearing, store the
-            //       profile in g_telemetry.last_obstacle under the mutex,
-            //       act on scan_plan_avoidance(), then go to RECOVER_LINE.
             state_avoid_obstacle();
         break;
 
         case CAR_STATE_RECOVER_LINE:
-            // TODO: Call scan_recover_line() each tick. Go to FOLLOW_LINE
-            //       on CAR_OK, to HALTED on CAR_ERR_TIMEOUT.
             state_recover_line();
         break;
 
@@ -603,21 +647,18 @@ static void run_state_machine (void)
  */
 static void enter_state (car_mission_state_t state)
 {
-#if CAR_SKIP_LINE_RECOVERY
-    /* Every route into the search comes through here, so one redirect
-     * covers losing the line, a bypass and the end of a detour alike. */
-    if (CAR_STATE_RECOVER_LINE == state)
-    {
-        state = CAR_STATE_FOLLOW_LINE;
-    }
-#endif
-
     CAR_LOG(CAR_LOG_INFO, "state %d -> %d\n", g_state, state);
 
     switch (state)
     {
         case CAR_STATE_FOLLOW_LINE:
-            g_prev_error      = 0;
+            /* A detour or a search left the line, so the next touch is a
+             * re-entry that may be at a steep angle. A junction turn spins
+             * on the crossing and lands on the new branch, and going
+             * straight on never left the line. */
+            g_reentry         = ((CAR_STATE_AVOID_OBSTACLE == g_state)
+                                 || (CAR_STATE_RECOVER_LINE == g_state))
+                                ? REENTRY_SEEK : REENTRY_OFF;
             g_lost_since_mm   = distance_now();
             g_follow_start_mm = distance_now();
             g_seen_samples    = 0u;
@@ -625,15 +666,17 @@ static void enter_state (car_mission_state_t state)
         break;
 
         case CAR_STATE_EXECUTE_TURN:
-            g_turn_search_start = distance_now();
-            g_b_turn_issued     = false;
+            (void)motion_stop();
+            g_junction_phase   = JUNCTION_WAIT;
+            g_junction_msec    = car_time_msec();
+            gb_junction_armed  = false;
         break;
 
         case CAR_STATE_AVOID_OBSTACLE:
-            g_b_scan_done      = false;
-            g_b_reversing      = false;
-            g_b_off_line       = false;
-            g_b_retracing      = false;
+            gb_scan_done       = false;
+            gb_reversing       = false;
+            gb_off_line        = false;
+            gb_retracing       = false;
             g_retrace_index    = 0u;
             g_probe_side       = CAR_AVOID_LEFT;
             g_detour_index     = 0u;
@@ -647,8 +690,8 @@ static void enter_state (car_mission_state_t state)
         case CAR_STATE_COLLISION:
             (void)motion_stop();
             g_collisions++;
-            g_collision_msec   = car_hw_msec();
-            g_b_collision_done = false;
+            g_collision_msec   = car_time_msec();
+            gb_collision_done  = false;
             CAR_LOG(CAR_LOG_ERROR, "collision %u, stopping dead\n",
                     g_collisions);
         break;
@@ -675,13 +718,25 @@ static void state_follow_line (void)
         g_detour_attempts = 0u;
     }
 
-    if (g_b_obstacle)
+    if (!gb_junction)
+    {
+        gb_junction_armed = true;
+    }
+
+    if (gb_obstacle)
     {
         enter_state(CAR_STATE_AVOID_OBSTACLE);
     }
     else if (CAR_NAV_NONE != g_pending_nav_command)
     {
         enter_state(CAR_STATE_DECODE_BARCODE);
+    }
+    else if (gb_junction && gb_junction_armed && (REENTRY_OFF == g_reentry))
+    {
+        /* Not while coming back onto the line: crossing it square on reads
+         * as a junction for a moment too. */
+        CAR_LOG(CAR_LOG_INFO, "junction, stopping\n");
+        enter_state(CAR_STATE_EXECUTE_TURN);
     }
     else if (!steer_along_line())
     {
@@ -696,92 +751,109 @@ static void state_follow_line (void)
 }
 
 /**
- * @brief Take the pending command and decide whether it needs a turn.
+ * @brief Take the pending command, log it and record it for telemetry.
+ *
+ * @return The command, CAR_NAV_NONE if none was pending.
  */
-static void state_decode_barcode (void)
+static car_nav_command_t take_command (void)
 {
     car_nav_command_t command = g_pending_nav_command;
 
     g_pending_nav_command = CAR_NAV_NONE;
     CAR_LOG(CAR_LOG_INFO, "command %d\n", command);
 
-    if (E_OK == tk_loc_mtx(g_telemetry_mutex, TMO_FEVR))
+    if (E_OK == tk_loc_mtx(gh_telemetry_mutex, TMO_FEVR))
     {
         g_telemetry.last_nav_command = command;
-        (void)tk_unl_mtx(g_telemetry_mutex);
+        (void)tk_unl_mtx(gh_telemetry_mutex);
     }
 
-    if ((CAR_NAV_LEFT == command) || (CAR_NAV_RIGHT == command)
-        || (CAR_NAV_UTURN == command))
+    return command;
+}
+
+/**
+ * @brief Hold the command for the next junction and carry on following.
+ *
+ * NOTE: Barcodes sit anywhere along the track, so the command waits for
+ * the next cross however far away it is; turning where the barcode was
+ * read would leave the line. A later barcode replaces an earlier one.
+ */
+static void state_decode_barcode (void)
+{
+    g_active_command = take_command();
+    enter_state(CAR_STATE_FOLLOW_LINE);
+}
+
+/**
+ * @brief Stopped at a junction: wait for a command, then turn or go on.
+ *
+ * Waits CAR_JUNCTION_WAIT_MSEC with the wheels stopped, taking any command
+ * that arrives meanwhile. Left and right then creep CAR_JUNCTION_CREEP_MM so
+ * the car spins about the crossing, and turn. A U-turn spins where it
+ * stands. Straight, or no command since the last junction, drives on.
+ */
+static void state_execute_turn (void)
+{
+    if (JUNCTION_WAIT == g_junction_phase)
     {
-        g_active_command = command;
-        enter_state(CAR_STATE_EXECUTE_TURN);
+        if (CAR_NAV_NONE != g_pending_nav_command)
+        {
+            g_active_command = take_command();
+        }
+
+        if ((car_time_msec() - g_junction_msec) >= CAR_JUNCTION_WAIT_MSEC)
+        {
+            leave_junction();
+        }
+    }
+    else if (motion_is_busy())
+    {
+        /* Creeping or turning. */
+    }
+    else if (JUNCTION_CREEP == g_junction_phase)
+    {
+        if (CAR_NAV_LEFT == g_active_command)
+        {
+            (void)motion_turn_left(CAR_TURN_DEG);
+        }
+        else
+        {
+            (void)motion_turn_right(CAR_TURN_DEG);
+        }
+
+        g_junction_phase = JUNCTION_TURN;
     }
     else
     {
+        /* Turned onto the new branch. */
         enter_state(CAR_STATE_FOLLOW_LINE);
+        g_active_command = CAR_NAV_NONE;
     }
 }
 
 /**
- * @brief Keep following to the next junction, then make the turn once.
- *
- * NOTE: A turn command is taken to mean "at the next junction". If no
- * junction shows up within CAR_TURN_SEARCH_MM the turn is made anyway.
- * TODO: confirm against the course write-up whether turns are immediate.
+ * @brief The wait at a junction is over: start whatever it leads to.
  */
-static void state_execute_turn (void)
+static void leave_junction (void)
 {
-    if (g_b_obstacle && !g_b_turn_issued)
+    (void)motion_set_speed(CAR_FOLLOW_SPEED_MM_PER_SEC);
+
+    if ((CAR_NAV_LEFT == g_active_command)
+        || (CAR_NAV_RIGHT == g_active_command))
     {
-        /* Put the command back so the turn still happens once the way is
-         * clear, rather than being lost to the detour. */
-        CAR_LOG(CAR_LOG_INFO, "obstacle before the turn, avoiding first\n");
-        g_pending_nav_command = g_active_command;
-        enter_state(CAR_STATE_AVOID_OBSTACLE);
+        (void)motion_move_forward(CAR_JUNCTION_CREEP_MM);
+        g_junction_phase = JUNCTION_CREEP;
     }
-    else if (!g_b_turn_issued)
+    else if (CAR_NAV_UTURN == g_active_command)
     {
-        bool b_search_over = ((distance_now() - g_turn_search_start)
-                              >= CAR_TURN_SEARCH_MM);
-
-        if (g_b_junction || b_search_over)
-        {
-            (void)motion_stop();
-            (void)motion_set_speed(CAR_FOLLOW_SPEED_MM_PER_SEC);
-
-            if (CAR_NAV_LEFT == g_active_command)
-            {
-                (void)motion_turn_left(CAR_TURN_DEG);
-            }
-            else if (CAR_NAV_RIGHT == g_active_command)
-            {
-                (void)motion_turn_right(CAR_TURN_DEG);
-            }
-            else
-            {
-                (void)motion_turn_right(CAR_UTURN_DEG);
-            }
-
-            g_b_turn_issued = true;
-        }
-        else if (!steer_along_line())
-        {
-            /* Lost the line on the way to the junction: turn where we are. */
-            g_b_junction = true;
-        }
-        else
-        {
-            /* Still approaching. */
-        }
-    }
-    else if (!motion_is_busy())
-    {
-        enter_state(CAR_STATE_FOLLOW_LINE);
+        (void)motion_turn_right(CAR_UTURN_DEG);
+        g_junction_phase = JUNCTION_TURN;
     }
     else
     {
-        /* Turning. */
+        CAR_LOG(CAR_LOG_INFO, "no turn for this junction, straight on\n");
+        g_active_command = CAR_NAV_NONE;
+        enter_state(CAR_STATE_FOLLOW_LINE);
     }
 }
 
@@ -792,182 +864,248 @@ static void state_avoid_obstacle (void)
 {
     if (motion_is_busy())
     {
-        /* g_b_scan_done means a detour leg is running. A reverse is the
-         * other busy case, and an obstacle ahead during one is the thing
-         * being backed away from, so it is left alone. */
-        if (g_b_obstacle && g_b_scan_done)
-        {
-            CAR_LOG(CAR_LOG_INFO, "obstacle during leg %u, replanning\n",
-                    g_detour_index);
-            (void)motion_stop();
-            g_b_scan_done  = false;
-            g_detour_index = 0u;
-        }
-
-        return;
+        watch_detour_leg();
     }
-
-    if (g_b_retracing)
+    else if (gb_retracing)
     {
         retrace_step();
-        return;
-    }
-
-    if (g_b_reversing)
-    {
-        /* Back at the origin. Probe the chosen side for real rather than
-         * ranging again from 100 mm further back, which only ever repeats
-         * the answer that sent the car backwards in the first place. */
-        g_b_reversing  = false;
-        g_b_scan_done  = true;
-        g_detour_index = 0u;
-        CAR_LOG(CAR_LOG_INFO, "probing %s\n",
-                (CAR_AVOID_LEFT == g_detour_side) ? "left" : "right");
-    }
-
-    if (!g_b_scan_done)
-    {
-        car_obstacle_profile_t profile  = { 0 };
-        car_avoid_action_t     action   = CAR_AVOID_STOP;
-        uint16_t               range_mm = 0u;
-
-        (void)scan_coarse(&profile);
-
-        if (profile.b_is_valid)
-        {
-            int16_t  centre = (int16_t)((int16_t)CAR_STRAIGHT_AHEAD_DEG
-                                        + profile.bearing_deg);
-            int16_t  half   = (int16_t)SCAN_FINE_HALF_SPAN_DEG;
-            int16_t  start  = (int16_t)(centre - half);
-            int16_t  end    = (int16_t)(centre + half);
-
-            if (start < 0)
-            {
-                start = 0;
-            }
-
-            if (end > (int16_t)SERVO_TRAVEL_DEG)
-            {
-                end = (int16_t)SERVO_TRAVEL_DEG;
-            }
-
-            (void)scan_fine((uint16_t)start, (uint16_t)end, &profile);
-        }
-
-        /* Leave the servo looking ahead for the forward ping later. */
-        (void)scan_measure(CAR_STRAIGHT_AHEAD_DEG, &range_mm);
-
-        if (E_OK == tk_loc_mtx(g_telemetry_mutex, TMO_FEVR))
-        {
-            g_telemetry.last_obstacle = profile;
-            (void)tk_unl_mtx(g_telemetry_mutex);
-        }
-
-        (void)scan_plan_avoidance(&profile, &action);
-
-        /* The same obstacle coming back means the last detour did not clear
-         * it, so repeating it will not either. Back off instead. */
-        if (((CAR_AVOID_LEFT == action) || (CAR_AVOID_RIGHT == action))
-            && (g_detour_attempts >= CAR_MAX_DETOUR_ATTEMPTS))
-        {
-            CAR_LOG(CAR_LOG_ERROR,
-                    "detour %u did not clear it, reversing instead\n",
-                    g_detour_attempts);
-            action = CAR_AVOID_REVERSE;
-        }
-
-        CAR_LOG(CAR_LOG_INFO, "obstacle bearing %d range %u action %d\n",
-                profile.bearing_deg, profile.closest_range_mm, action);
-
-        switch (action)
-        {
-            case CAR_AVOID_LEFT:
-            case CAR_AVOID_RIGHT:
-                plan_detour(&profile);
-                g_detour_attempts++;
-                g_detour_side  = action;
-                g_detour_index = 0u;
-                g_b_scan_done  = true;
-            break;
-
-            case CAR_AVOID_REVERSE:
-                if (g_detour_attempts < CAR_MAX_DETOUR_ATTEMPTS)
-                {
-                    /* Nothing measured clear, but the sonar only sees the
-                     * mouth of each lane. Back off and drive into one to
-                     * find out, alternating sides each time round. */
-                    g_detour_attempts++;
-                    g_detour_side = g_probe_side;
-                    g_probe_side  = other_side(g_probe_side);
-                    g_b_reversing = true;
-                    (void)motion_move_backward(SCAN_REVERSE_MM);
-                }
-                else
-                {
-                    CAR_LOG(CAR_LOG_ERROR, "both sides blocked, halting\n");
-                    enter_state(CAR_STATE_HALTED);
-                }
-            break;
-
-            case CAR_AVOID_CONTINUE:
-                if (g_b_off_line)
-                {
-                    /* The way is clear but the detour already left the
-                     * line, so search rather than pretending it is under
-                     * the sensors. */
-                    (void)scan_recover_start(CAR_AVOID_RIGHT == g_detour_side);
-                    enter_state(CAR_STATE_RECOVER_LINE);
-                }
-                else
-                {
-                    enter_state(CAR_STATE_FOLLOW_LINE);
-                }
-            break;
-
-            case CAR_AVOID_STOP:
-            default:
-                enter_state(CAR_STATE_HALTED);
-            break;
-        }
-    }
-    else if (g_detour_index < CAR_DETOUR_STEPS)
-    {
-        detour_step_t const * p_step = &g_detour[g_detour_index];
-
-        if ((g_detour_index >= CAR_DETOUR_PAST_INDEX) && g_b_line_seen)
-        {
-            /* Round the obstacle and back over the line already. Driving
-             * the rest of the box would only leave it again, and the line
-             * is what the mission is actually about. */
-            CAR_LOG(CAR_LOG_INFO, "line back at leg %u, detour done\n",
-                    g_detour_index);
-            enter_state(CAR_STATE_FOLLOW_LINE);
-        }
-        /* Only the driving legs can run into anything; a turn on the spot
-         * cannot, and pinging before one would just cost 60 ms. */
-        else if (!p_step->b_turn && path_blocked())
-        {
-            /* This lane is blocked too. Undo the legs driven so far so the
-             * other side is tried from the same place, not from wherever
-             * this attempt happened to end. */
-            CAR_LOG(CAR_LOG_INFO, "leg %u blocked, backing out\n",
-                    g_detour_index);
-            g_b_retracing   = true;
-            g_retrace_index = g_detour_index;
-        }
-        else
-        {
-            issue_detour_step(p_step);
-            g_detour_index++;
-            g_b_off_line = true;
-        }
     }
     else
     {
-        /* Back on the original heading, offset toward the detour side, so
-         * the line lies on the other side. */
-        (void)scan_recover_start(CAR_AVOID_RIGHT == g_detour_side);
-        enter_state(CAR_STATE_RECOVER_LINE);
+        if (gb_reversing)
+        {
+            /* Back at the origin. Probe the chosen side for real rather
+             * than ranging again from 100 mm further back, which only ever
+             * repeats the answer that sent the car backwards. */
+            gb_reversing   = false;
+            gb_scan_done   = true;
+            g_detour_index = 0u;
+            CAR_LOG(CAR_LOG_INFO, "probing %s\n",
+                    (CAR_AVOID_LEFT == g_detour_side) ? "left" : "right");
+        }
+
+        if (!gb_scan_done)
+        {
+            scan_and_decide();
+        }
+        else if (g_detour_index < SCAN_DETOUR_LEGS)
+        {
+            next_detour_leg();
+        }
+        else
+        {
+            /* Back on the original heading, offset toward the detour side,
+             * so the line lies on the other side. */
+            (void)scan_recover_start(CAR_AVOID_RIGHT == g_detour_side);
+            enter_state(CAR_STATE_RECOVER_LINE);
+        }
+    }
+}
+
+/**
+ * @brief While a leg or a reverse runs, watch for what should cut it short.
+ *
+ * gb_scan_done means a detour leg is running. A reverse is the other busy
+ * case, and an obstacle ahead during one is the thing being backed away
+ * from, so it is left alone.
+ */
+static void watch_detour_leg (void)
+{
+    if (gb_obstacle && gb_scan_done)
+    {
+        CAR_LOG(CAR_LOG_INFO, "obstacle during leg %u, replanning\n",
+                g_detour_index);
+        (void)motion_stop();
+        gb_scan_done   = false;
+        g_detour_index = 0u;
+    }
+    else if (gb_scan_done && (!gb_retracing)
+             && (g_detour_index > CAR_DETOUR_PAST_INDEX) && gb_line_seen)
+    {
+        /* Past the obstacle and the line came under a sensor partway
+         * through a leg: stop on it, rather than finish the leg and leave
+         * it behind. */
+        CAR_LOG(CAR_LOG_INFO, "line back during leg %u, detour done\n",
+                g_detour_index - 1u);
+        (void)motion_stop();
+        enter_state(CAR_STATE_FOLLOW_LINE);
+    }
+    else
+    {
+        /* Leg still running. */
+    }
+}
+
+/**
+ * @brief Profile the obstacle, record it, and act on the avoidance plan.
+ */
+static void scan_and_decide (void)
+{
+    car_obstacle_profile_t profile  = { 0 };
+    car_avoid_action_t     action   = CAR_AVOID_STOP;
+    uint16_t               range_mm = 0u;
+
+    (void)scan_coarse(&profile);
+
+    if (profile.b_is_valid)
+    {
+        fine_scan_around(&profile);
+    }
+
+    /* Leave the servo looking ahead for the forward ping later. */
+    (void)scan_measure(SCAN_CENTRE_ANGLE_DEG, &range_mm);
+
+    if (E_OK == tk_loc_mtx(gh_telemetry_mutex, TMO_FEVR))
+    {
+        g_telemetry.last_obstacle = profile;
+        (void)tk_unl_mtx(gh_telemetry_mutex);
+    }
+
+    (void)scan_plan_avoidance(&profile, &action);
+
+    /* The same obstacle coming back means the last detour did not clear
+     * it, so repeating it will not either. Back off instead. */
+    if (((CAR_AVOID_LEFT == action) || (CAR_AVOID_RIGHT == action))
+        && (g_detour_attempts >= CAR_MAX_DETOUR_ATTEMPTS))
+    {
+        CAR_LOG(CAR_LOG_ERROR,
+                "detour %u did not clear it, reversing instead\n",
+                g_detour_attempts);
+        action = CAR_AVOID_REVERSE;
+    }
+
+    CAR_LOG(CAR_LOG_INFO, "obstacle bearing %d range %u action %d\n",
+            profile.bearing_deg, profile.closest_range_mm, action);
+    act_on_plan(action, &profile);
+}
+
+/**
+ * @brief Fine scan the arc around the bearing the coarse scan found.
+ *
+ * @param[in,out] p_profile Coarse result in, fine result out.
+ */
+static void fine_scan_around (car_obstacle_profile_t * p_profile)
+{
+    /* Casts: servo angles are 0 to 180 and the bearing within ±90, so
+     * every sum here fits an int16_t, and start and end are clamped to
+     * 0 to SERVO_TRAVEL_DEG before they go back into a uint16_t. */
+    int16_t centre = (int16_t)((int16_t)SCAN_CENTRE_ANGLE_DEG
+                               + p_profile->bearing_deg);
+    int16_t start  = (int16_t)(centre - (int16_t)SCAN_FINE_HALF_SPAN_DEG);
+    int16_t end    = (int16_t)(centre + (int16_t)SCAN_FINE_HALF_SPAN_DEG);
+
+    if (start < 0)
+    {
+        start = 0;
+    }
+
+    /* Casts: as above, all within 0 to 180 by now. */
+    if (end > (int16_t)SERVO_TRAVEL_DEG)
+    {
+        end = (int16_t)SERVO_TRAVEL_DEG;
+    }
+
+    (void)scan_fine((uint16_t)start, (uint16_t)end, p_profile); /* 0..180 */
+}
+
+/**
+ * @brief Start what the avoidance planner chose.
+ *
+ * @param[in] action    The plan.
+ * @param[in] p_profile The obstacle it was made from, to size a detour.
+ */
+static void act_on_plan (car_avoid_action_t action,
+                         car_obstacle_profile_t const * p_profile)
+{
+    switch (action)
+    {
+        case CAR_AVOID_LEFT:
+        case CAR_AVOID_RIGHT:
+            (void)scan_detour_plan(p_profile);
+            g_detour_attempts++;
+            g_detour_side  = action;
+            g_detour_index = 0u;
+            gb_scan_done   = true;
+        break;
+
+        case CAR_AVOID_REVERSE:
+            if (g_detour_attempts < CAR_MAX_DETOUR_ATTEMPTS)
+            {
+                /* Nothing measured clear, but the sonar only sees the mouth
+                 * of each lane. Back off and drive into one to find out,
+                 * alternating sides each time round. */
+                g_detour_attempts++;
+                (void)scan_detour_plan(p_profile);
+                g_detour_side = g_probe_side;
+                g_probe_side  = other_side(g_probe_side);
+                gb_reversing  = true;
+                (void)motion_move_backward(SCAN_REVERSE_MM);
+            }
+            else
+            {
+                CAR_LOG(CAR_LOG_ERROR, "both sides blocked, halting\n");
+                enter_state(CAR_STATE_HALTED);
+            }
+        break;
+
+        case CAR_AVOID_CONTINUE:
+            if (gb_off_line)
+            {
+                /* The way is clear but the detour already left the line,
+                 * so search rather than pretend it is under the sensors. */
+                (void)scan_recover_start(CAR_AVOID_RIGHT == g_detour_side);
+                enter_state(CAR_STATE_RECOVER_LINE);
+            }
+            else
+            {
+                enter_state(CAR_STATE_FOLLOW_LINE);
+            }
+        break;
+
+        case CAR_AVOID_STOP:
+        default:
+            enter_state(CAR_STATE_HALTED);
+        break;
+    }
+}
+
+/**
+ * @brief Drive the next leg of the box, unless the detour is already over.
+ */
+static void next_detour_leg (void)
+{
+    car_avoid_action_t action = CAR_AVOID_STOP;
+    uint16_t           amount = 0u;
+
+    (void)scan_detour_get_leg(g_detour_index, g_detour_side, false, &action,
+                              &amount);
+
+    if ((g_detour_index >= CAR_DETOUR_PAST_INDEX) && gb_line_seen)
+    {
+        /* Round the obstacle and back over the line already. Driving the
+         * rest of the box would only leave it again, and the line is what
+         * the mission is actually about. */
+        CAR_LOG(CAR_LOG_INFO, "line back at leg %u, detour done\n",
+                g_detour_index);
+        enter_state(CAR_STATE_FOLLOW_LINE);
+    }
+    /* Only the driving legs can run into anything; a turn on the spot
+     * cannot, and pinging before one would just cost 60 ms. */
+    else if ((CAR_AVOID_CONTINUE == action) && (path_blocked()))
+    {
+        /* This lane is blocked too. Undo the legs driven so far so the
+         * other side is tried from the same place, not from wherever this
+         * attempt happened to end. */
+        CAR_LOG(CAR_LOG_INFO, "leg %u blocked, backing out\n",
+                g_detour_index);
+        gb_retracing    = true;
+        g_retrace_index = g_detour_index;
+    }
+    else
+    {
+        take_step(action, amount);
+        g_detour_index++;
+        gb_off_line = true;
     }
 }
 
@@ -976,18 +1114,26 @@ static void state_avoid_obstacle (void)
  */
 static void state_recover_line (void)
 {
-    if (g_b_obstacle)
+    if (gb_obstacle)
     {
         /* Searching for the line is no reason to drive into something. */
         CAR_LOG(CAR_LOG_INFO, "obstacle during the search, avoiding\n");
         (void)motion_stop();
         enter_state(CAR_STATE_AVOID_OBSTACLE);
     }
+    else if ((motion_is_busy()) && gb_line_seen)
+    {
+        /* The line passed under a sensor partway through a search step.
+         * Stop on it now; finishing the step would sweep straight past. */
+        CAR_LOG(CAR_LOG_INFO, "line found mid step\n");
+        (void)motion_stop();
+        enter_state(CAR_STATE_FOLLOW_LINE);
+    }
     else if (!motion_is_busy())
     {
         car_status_t status = CAR_ERR_NO_DATA;
 
-        (void)scan_recover_report(g_b_line_seen);
+        (void)scan_recover_report(gb_line_seen);
         status = scan_recover_line();
 
         if (CAR_OK == status)
@@ -1005,24 +1151,46 @@ static void state_recover_line (void)
             uint16_t           amount = 0u;
 
             (void)scan_recover_get_step(&action, &amount);
-
-            if (CAR_AVOID_LEFT == action)
-            {
-                (void)motion_turn_left(amount);
-            }
-            else if (CAR_AVOID_RIGHT == action)
-            {
-                (void)motion_turn_right(amount);
-            }
-            else if (CAR_AVOID_CONTINUE == action)
-            {
-                (void)motion_move_forward(amount);
-            }
-            else
-            {
-                /* Nothing to do this step. */
-            }
+            take_step(action, amount);
         }
+    }
+    else
+    {
+        /* A search step is still running. */
+    }
+}
+
+/**
+ * @brief Start one move the scanning module handed out.
+ *
+ * @param[in] action CAR_AVOID_LEFT or CAR_AVOID_RIGHT to turn,
+ *                   CAR_AVOID_CONTINUE to drive forward, CAR_AVOID_REVERSE
+ *                   to drive back. Anything else does nothing.
+ * @param[in] amount Degrees for a turn, mm for a drive.
+ */
+static void take_step (car_avoid_action_t action, uint16_t amount)
+{
+    if (CAR_AVOID_LEFT == action)
+    {
+        gb_last_turn_left = true;
+        (void)motion_turn_left(amount);
+    }
+    else if (CAR_AVOID_RIGHT == action)
+    {
+        gb_last_turn_left = false;
+        (void)motion_turn_right(amount);
+    }
+    else if (CAR_AVOID_CONTINUE == action)
+    {
+        (void)motion_move_forward(amount);
+    }
+    else if (CAR_AVOID_REVERSE == action)
+    {
+        (void)motion_move_backward(amount);
+    }
+    else
+    {
+        /* Nothing to do this step. */
     }
 }
 
@@ -1044,16 +1212,16 @@ static void state_collision (void)
         CAR_LOG(CAR_LOG_ERROR, "hit %u times, halting\n", g_collisions);
         enter_state(CAR_STATE_HALTED);
     }
-    else if ((car_hw_msec() - g_collision_msec) < CAR_COLLISION_SETTLE_MSEC)
+    else if ((car_time_msec() - g_collision_msec) < CAR_COLLISION_SETTLE_MSEC)
     {
         /* Held still while the impact rings out of the accelerometer.
          * Reading anything during this is reading the crash, not the
          * world. */
         (void)motion_stop();
     }
-    else if (!g_b_collision_done)
+    else if (!gb_collision_done)
     {
-        g_b_collision_done = true;
+        gb_collision_done = true;
         (void)motion_move_backward(CAR_COLLISION_BACKOFF_MM);
     }
     else if (!motion_is_busy())
@@ -1071,14 +1239,14 @@ static void state_collision (void)
 /**
  * @brief One tick of the line following law.
  *
- * Proportional plus derivative on the sensor error while the line is seen.
- * When it is lost, drive straight for the gap and barcode distance, then
- * lean toward the side it was last seen on, and finally give up.
+ * Proportional on the sensor error while the line is seen. When it is
+ * lost, drive straight for CAR_LINE_LOST_STRAIGHT_MM, then lean toward the
+ * side it was last seen on, and finally give up. Coming back onto the line
+ * from off it is reenter_line()'s job.
  *
  * NOTE: The speed only rises to the follow speed after the line has been
- * seen for CAR_LINE_SEEN_SAMPLES in a row. Inside a barcode the centre
- * sensor flips every bar, and holding the reading speed through the whole
- * symbol keeps every element's width on the same scale for the decoder.
+ * seen for CAR_LINE_SEEN_SAMPLES in a row, so a car that has just found
+ * the line, or keeps losing it, stays slow until it has settled on it.
  *
  * @return false once the line has been lost for longer than the limit.
  */
@@ -1088,131 +1256,308 @@ static bool steer_along_line (void)
     int32_t  steer       = 0;
     uint32_t distance    = distance_now();
 
-    if (g_b_line_seen)
+    if (reenter_line(distance))
     {
-        int16_t error = g_line_error;
-
-        steer = (CAR_STEER_KP_PERMILLE * error)
-                + (CAR_STEER_KD_PERMILLE * (error - g_prev_error));
-        g_prev_error    = error;
-        g_lost_since_mm = distance;
-
-        if (0 != error)
-        {
-            g_last_side = error;
-        }
-
-        if (g_seen_samples < CAR_LINE_SEEN_SAMPLES)
-        {
-            g_seen_samples++;
-        }
-        else
-        {
-            (void)motion_set_speed(
-                terrain_speed(CAR_FOLLOW_SPEED_MM_PER_SEC));
-        }
+        /* The re-entry drives the car this tick. */
+    }
+    else if (gb_line_seen)
+    {
+        steer = steer_on_line(distance);
+        /* Cast: KP times an error of at most 2, far inside int16_t. */
+        (void)motion_drive_steer((int16_t)steer);
     }
     else
     {
-        uint32_t lost_mm = distance - g_lost_since_mm;
+        b_following = steer_off_line(distance, &steer);
 
-        g_seen_samples = 0u;
-        (void)motion_set_speed(
-            terrain_speed(CAR_BARCODE_SPEED_MM_PER_SEC));
-
-        if (lost_mm < CAR_LINE_LOST_STRAIGHT_MM)
+        if (b_following)
         {
-            /* The gap and the barcode: hold course, slow enough to read. */
-            steer = 0;
+            /* Cast: the lean is at most 1000 either way. */
+            (void)motion_drive_steer((int16_t)steer);
         }
-        else if (lost_mm < CAR_LINE_LOST_LIMIT_MM)
-        {
-            steer = (g_last_side < 0) ? -CAR_STEER_LOST_PERMILLE
-                                      : CAR_STEER_LOST_PERMILLE;
-        }
-        else
-        {
-#if CAR_SKIP_LINE_RECOVERY
-            steer = 0;                  /* Hold course, never give up. */
-#else
-            b_following = false;
-#endif
-        }
-    }
-
-    if (b_following)
-    {
-        (void)motion_drive_steer((int16_t)steer);
     }
 
     return b_following;
 }
 
 /**
- * @brief Ping straight ahead at most once per sonar cycle.
+ * @brief One tick of coming back onto the line from off it.
+ *
+ * NOTE on why the normal law cannot do this. The sensors straddle the
+ * line, so they only work while the car runs roughly along it. Arriving at
+ * an angle, the first sensor to touch the line is the one on the side the
+ * car is heading, and steering toward it turns the car further across.
+ * Steering hard the other way fails too, because the sensors sit ahead of
+ * the wheels: turning where they are swings them off the line again.
+ *
+ * So the car does what it does at a junction. It drives straight on until
+ * the second sensor touches the line, creeps until its wheels are over the
+ * line, and turns on the spot toward the second sensor until that sensor
+ * touches the line again. The normal law finishes from there.
+ *
+ * NOTE on where the spin stops. With the sensors this far ahead of the
+ * wheels, the space between them is only about 3 degrees of spin wide, and
+ * a spin that has reached full speed coasts further than that after the
+ * stop, carrying the line past both sensors. Stopping at the first touch
+ * leaves the whole sensor spacing, about 10 degrees, for the coast, and
+ * the line ends under one sensor or the other with the car within about
+ * 10 degrees of straight.
+ *
+ * The creep comes from the crossing itself. The two touches are some
+ * distance apart along the path, and the wheels, CAR_JUNCTION_CREEP_MM
+ * behind the sensors, still have that creep less half the gap to go when
+ * the second sensor touches, whatever the angle. TRACK_LINE_WIDTH_MM on
+ * top puts them just past the line's centre at the angles this happens
+ * at.
+ * A gap of twice that or more is an angle under about 5 degrees, which the
+ * normal law steers out of on its own.
+ *
+ * @param[in] distance Ground distance now, mm.
+ *
+ * @return true while the re-entry is driving the car.
+ */
+static bool reenter_line (uint32_t distance)
+{
+    uint32_t const reach   = CAR_JUNCTION_CREEP_MM + TRACK_LINE_WIDTH_MM;
+    /* Cast: masked to the two line sensor bits. */
+    uint8_t const  line    = (uint8_t)(g_line_mask & LINE_BITS_LINE);
+    uint8_t const  second  = gb_spin_left ? LINE_BIT_LEFT : LINE_BIT_RIGHT;
+    uint32_t const crossed = distance - g_touch_mm;
+    bool           b_busy  = true;
+
+    switch (g_reentry)
+    {
+        case REENTRY_SEEK:
+            if (0u == line)
+            {
+                b_busy = false;     /* steer_off_line() heads for it */
+            }
+            else
+            {
+                first_touch(line, distance);
+            }
+        break;
+
+        case REENTRY_CROSS:
+            if ((0u != (line & second)) && (reach > (crossed / 2u)))
+            {
+                /* Cast: at most reach, well under 1000 mm. */
+                uint16_t creep = (uint16_t)(reach - (crossed / 2u));
+
+                CAR_LOG(CAR_LOG_INFO, "crossed in %u mm, creeping %u mm\n",
+                        crossed, creep);
+                (void)motion_move_forward(creep);
+                g_reentry = REENTRY_CREEP;
+            }
+            else if ((0u != (line & second)) || (crossed >= (2u * reach)))
+            {
+                /* Shallow, or it never crossed: the normal law copes. */
+                g_reentry = REENTRY_OFF;
+                b_busy    = false;
+            }
+            else
+            {
+                (void)motion_drive_steer(0);
+            }
+        break;
+
+        case REENTRY_CREEP:
+            if (!motion_is_busy())
+            {
+                g_reentry = REENTRY_SPIN;
+
+                if (gb_spin_left)
+                {
+                    (void)motion_turn_left(CAR_REENTRY_SPIN_MAX_DEG);
+                }
+                else
+                {
+                    (void)motion_turn_right(CAR_REENTRY_SPIN_MAX_DEG);
+                }
+            }
+        break;
+
+        case REENTRY_SPIN:
+            if (0u != (line & second))
+            {
+                CAR_LOG(CAR_LOG_INFO, "back on the line\n");
+                (void)motion_stop();
+                g_reentry = REENTRY_OFF;
+                b_busy    = false;
+            }
+            else if (!motion_is_busy())
+            {
+                /* The whole arc and never met it: off the line again. */
+                g_reentry       = REENTRY_SEEK;
+                g_lost_since_mm = distance;
+                b_busy          = false;
+            }
+            else
+            {
+                /* Still turning toward it. */
+            }
+        break;
+
+        case REENTRY_OFF:
+        default:
+            b_busy = false;
+        break;
+    }
+
+    return b_busy;
+}
+
+/**
+ * @brief The line has come under a sensor: start crossing it.
+ *
+ * The spin at the end goes away from the sensor that touched first. Both
+ * at once is square on: the spin then turns back against the turn that
+ * brought the car here.
+ *
+ * @param[in] line     The line sensor bits that are dark.
+ * @param[in] distance Ground distance now, mm.
+ */
+static void first_touch (uint8_t line, uint32_t distance)
+{
+    if (LINE_BITS_LINE == line)
+    {
+        gb_spin_left = !gb_last_turn_left;
+    }
+    else
+    {
+        gb_spin_left = (LINE_BIT_RIGHT == line);
+    }
+
+    g_touch_mm = distance;
+    g_reentry  = REENTRY_CROSS;
+    CAR_LOG(CAR_LOG_INFO, "line touched, crossing it\n");
+    (void)motion_drive_steer(0);
+}
+
+/**
+ * @brief Steering while a line sensor sees the line.
+ *
+ * @param[in] distance Ground distance now, mm.
+ *
+ * @return Steer, per mille.
+ */
+static int32_t steer_on_line (uint32_t distance)
+{
+    int16_t error = g_line_error;
+
+    g_lost_since_mm = distance;
+
+    if (0 != error)
+    {
+        g_last_side = error;
+    }
+
+    if (g_seen_samples < CAR_LINE_SEEN_SAMPLES)
+    {
+        g_seen_samples++;
+    }
+    else
+    {
+        (void)motion_set_speed(terrain_speed(CAR_FOLLOW_SPEED_MM_PER_SEC));
+    }
+
+    return CAR_STEER_KP_PERMILLE * error;
+}
+
+/**
+ * @brief Steering while no line sensor sees the line.
+ *
+ * @param[in]  distance Ground distance now, mm.
+ * @param[out] p_steer  Steer, per mille, written while still following.
+ *
+ * @return false once the line has been lost for longer than the limit.
+ */
+static bool steer_off_line (uint32_t distance, int32_t * p_steer)
+{
+    bool     b_following = true;
+    uint32_t lost_mm     = distance - g_lost_since_mm;
+
+    g_seen_samples = 0u;
+    (void)motion_set_speed(terrain_speed(CAR_BARCODE_SPEED_MM_PER_SEC));
+
+    if (lost_mm >= CAR_LINE_LOST_LIMIT_MM)
+    {
+        b_following = false;
+    }
+    else if (lost_mm < CAR_LINE_LOST_STRAIGHT_MM)
+    {
+        /* Briefly out of view on a straight: hold course. */
+        *p_steer = 0;
+    }
+    else
+    {
+        /* Really off the line now, so the next touch is a re-entry. */
+        g_reentry         = REENTRY_SEEK;
+        gb_last_turn_left = (g_last_side < 0);
+        *p_steer          = gb_last_turn_left ? -CAR_STEER_LOST_PERMILLE
+                                              : CAR_STEER_LOST_PERMILLE;
+    }
+
+    return b_following;
+}
+
+/**
+ * @brief Ping at most once per sonar cycle.
  *
  * @return true if something is inside SCAN_OBSTACLE_RANGE_MM.
  */
 static bool obstacle_ahead (void)
 {
-    bool b_blocked = false;
+    bool     b_blocked = false;
+    uint32_t now       = car_time_msec();
 
-    if (g_b_has_scan)
+    if (gb_has_scan
+        && ((now - g_last_sonar_msec) >= CAR_SONAR_CHECK_PERIOD_MSEC))
     {
-        uint32_t now = car_hw_msec();
-
-        if ((now - g_last_sonar_msec) >= CAR_SONAR_CHECK_PERIOD_MSEC)
-        {
-            g_last_sonar_msec = now;
+        g_last_sonar_msec = now;
 
 #if SCAN_SWEEP_WHILE_MOVING
-            /* Centre, right, centre, left, and any of them being close
-             * enough stops the car. A side return is not in the path the
-             * way a centre one is, but the fine scan that follows decides
-             * that properly and answers CONTINUE when there is really
-             * nothing in the way. An unnecessary stop is the cheap error
-             * here; driving into the corner of something is not. */
-            if (0u == (g_sweep_index & 1u))
-            {
-                b_blocked = path_blocked();
-            }
-            else
-            {
-                uint16_t range_mm = SONAR_MAX_RANGE_MM;
-                uint16_t angle    = (1u == g_sweep_index)
-                                    ? SCAN_MIN_ANGLE_DEG
-                                    : SCAN_MAX_ANGLE_DEG;
-
-                if (CAR_OK == scan_measure(angle, &range_mm))
-                {
-                    if (1u == g_sweep_index)
-                    {
-                        g_range_right_mm = range_mm;
-                    }
-                    else
-                    {
-                        g_range_left_mm = range_mm;
-                    }
-
-                    if (range_mm < SCAN_OBSTACLE_RANGE_MM)
-                    {
-                        CAR_LOG(CAR_LOG_INFO,
-                                "obstacle at %u mm, %u deg off centre\n",
-                                range_mm, angle);
-                        b_blocked = true;
-                    }
-                }
-            }
-
-            g_sweep_index = (uint8_t)((g_sweep_index + 1u) & 3u);
+        /* Centre, right, centre, left, and any of them being close enough
+         * stops the car. A side return is not in the path the way a centre
+         * one is, but the fine scan that follows decides that properly and
+         * answers CONTINUE when there is really nothing in the way. An
+         * unnecessary stop is the cheap error here; driving into the
+         * corner of something is not. */
+        b_blocked = (0u == (g_sweep_index & 1u)) ? path_blocked()
+                                                 : side_blocked();
+        g_sweep_index = (uint8_t)((g_sweep_index + 1u) & 3u);
 #else
-            b_blocked = path_blocked();
+        b_blocked = path_blocked();
 #endif
-        }
     }
 
     return b_blocked;
 }
+
+#if SCAN_SWEEP_WHILE_MOVING
+/**
+ * @brief Range the side the sweep is on.
+ *
+ * @return true if something is inside SCAN_OBSTACLE_RANGE_MM that side.
+ */
+static bool side_blocked (void)
+{
+    bool     b_blocked = false;
+    uint16_t range_mm  = SONAR_MAX_RANGE_MM;
+    uint16_t angle     = (1u == g_sweep_index) ? SCAN_MIN_ANGLE_DEG
+                                               : SCAN_MAX_ANGLE_DEG;
+
+    if ((CAR_OK == scan_measure(angle, &range_mm))
+        && (range_mm < SCAN_OBSTACLE_RANGE_MM))
+    {
+        CAR_LOG(CAR_LOG_INFO, "obstacle at %u mm, %u deg off centre\n",
+                range_mm, angle);
+        b_blocked = true;
+    }
+
+    return b_blocked;
+}
+#endif
 
 /**
  * @brief One forward ranging, no rate limit, no state.
@@ -1228,8 +1573,8 @@ static bool path_blocked (void)
     uint16_t range_mm  = SONAR_MAX_RANGE_MM;
     bool     b_blocked = false;
 
-    if (g_b_has_scan
-        && (CAR_OK == scan_measure(CAR_STRAIGHT_AHEAD_DEG, &range_mm))
+    if (gb_has_scan
+        && (CAR_OK == scan_measure(SCAN_CENTRE_ANGLE_DEG, &range_mm))
         && (range_mm < SCAN_OBSTACLE_RANGE_MM))
     {
         CAR_LOG(CAR_LOG_INFO, "obstacle at %u mm\n", range_mm);
@@ -1237,151 +1582,6 @@ static bool path_blocked (void)
     }
 
     return b_blocked;
-}
-
-/**
- * @brief Start one leg of the detour.
- *
- * @param[in] p_step Leg to run, with turns resolved against g_detour_side.
- */
-static void issue_detour_step (detour_step_t const * p_step)
-{
-    if (p_step->b_turn)
-    {
-        bool b_left = (CAR_AVOID_LEFT == g_detour_side);
-
-        if (!p_step->b_away)
-        {
-            b_left = !b_left;
-        }
-
-        if (b_left)
-        {
-            (void)motion_turn_left(p_step->amount);
-        }
-        else
-        {
-            (void)motion_turn_right(p_step->amount);
-        }
-    }
-    else
-    {
-        (void)motion_move_forward(p_step->amount);
-    }
-}
-
-/**
- * @brief Size the detour legs from the obstacle the fine scan measured.
- *
- * A fixed box either clips a wide obstacle or wastes floor on a narrow
- * one. The sideways leg has to clear half the obstacle plus the car's own
- * half width plus a margin, and the car covers that diagonally at
- * SCAN_DETOUR_TURN_DEG, so the straight line distance is divided by
- * sin 45.
- *
- * NOTE: Nothing measures how deep an obstacle is from the front, only how
- * wide it looks. Depth is therefore the width plus a margin, which is a
- * guess that holds for boxes and fails for walls. The mid detour ping is
- * what catches the failure.
- *
- * @param[in] p_profile Result of the fine scan. A zero width falls back
- *                      to the fixed legs.
- */
-static void plan_detour (car_obstacle_profile_t const * p_profile)
-{
-    uint16_t side_mm  = SCAN_DETOUR_SIDE_MM;
-    uint16_t depth_mm = SCAN_DETOUR_DEPTH_MM;
-
-    if ((NULL != p_profile) && (0u != p_profile->width_mm))
-    {
-        uint32_t clear = ((uint32_t)p_profile->width_mm / 2u)
-                         + SCAN_DETOUR_MARGIN_MM;
-
-        side_mm  = clamp_mm((clear * SCAN_DETOUR_SIN45_RECIP) / 1000u,
-                            SCAN_DETOUR_SIDE_MIN_MM,
-                            SCAN_DETOUR_SIDE_MAX_MM);
-        /* Width stands in for depth, because the sonar cannot see how far
-         * back an obstacle goes. CAR_LENGTH_MM is on top of it: the back
-         * of the car is still beside the obstacle when the bumper is past
-         * it, and turning in there clips it. */
-        depth_mm = clamp_mm((uint32_t)p_profile->width_mm + CAR_LENGTH_MM
-                            + SCAN_DETOUR_MARGIN_MM,
-                            SCAN_DETOUR_DEPTH_MIN_MM,
-                            SCAN_DETOUR_DEPTH_MAX_MM);
-    }
-
-    g_detour[1].amount = side_mm;
-    g_detour[3].amount = depth_mm;
-    g_detour[5].amount = side_mm;
-
-    CAR_LOG(CAR_LOG_INFO, "detour sized for %u mm wide: side %u depth %u\n",
-            (NULL != p_profile) ? p_profile->width_mm : 0u, side_mm,
-            depth_mm);
-}
-
-/**
- * @brief Hold a value inside a range.
- *
- * @param[in] value What to clamp.
- * @param[in] low   Lowest allowed.
- * @param[in] high  Highest allowed.
- *
- * @return The clamped value.
- */
-static uint16_t clamp_mm (uint32_t value, uint16_t low, uint16_t high)
-{
-    uint32_t held = value;
-
-    if (held < (uint32_t)low)
-    {
-        held = (uint32_t)low;
-    }
-    else if (held > (uint32_t)high)
-    {
-        held = (uint32_t)high;
-    }
-    else
-    {
-        /* Inside the range. */
-    }
-
-    return (uint16_t)held;
-}
-
-/**
- * @brief Drive one leg backwards, undoing what issue_detour_step() did.
- *
- * A turn is undone by turning the same amount the other way, a drive by
- * driving the same distance in reverse. Walked in reverse order by
- * retrace_step(), this puts the car back where the detour began.
- *
- * @param[in] p_step Leg to undo, resolved against the current side.
- */
-static void undo_detour_step (detour_step_t const * p_step)
-{
-    if (p_step->b_turn)
-    {
-        bool b_left = (CAR_AVOID_LEFT == g_detour_side);
-
-        if (!p_step->b_away)
-        {
-            b_left = !b_left;
-        }
-
-        /* The other way round from issue_detour_step(). */
-        if (b_left)
-        {
-            (void)motion_turn_right(p_step->amount);
-        }
-        else
-        {
-            (void)motion_turn_left(p_step->amount);
-        }
-    }
-    else
-    {
-        (void)motion_move_backward(p_step->amount);
-    }
 }
 
 /**
@@ -1395,12 +1595,17 @@ static void retrace_step (void)
 {
     if (0u != g_retrace_index)
     {
+        car_avoid_action_t action = CAR_AVOID_STOP;
+        uint16_t           amount = 0u;
+
         g_retrace_index--;
-        undo_detour_step(&g_detour[g_retrace_index]);
+        (void)scan_detour_get_leg(g_retrace_index, g_detour_side, true,
+                                  &action, &amount);
+        take_step(action, amount);
     }
     else if (g_detour_attempts < CAR_MAX_DETOUR_ATTEMPTS)
     {
-        g_b_retracing  = false;
+        gb_retracing   = false;
         g_detour_attempts++;
         g_detour_side  = other_side(g_detour_side);
         g_probe_side   = other_side(g_detour_side);
@@ -1410,7 +1615,7 @@ static void retrace_step (void)
     }
     else
     {
-        g_b_retracing = false;
+        gb_retracing = false;
         CAR_LOG(CAR_LOG_ERROR, "no lane free after %u tries, halting\n",
                 g_detour_attempts);
         enter_state(CAR_STATE_HALTED);
@@ -1432,10 +1637,10 @@ static car_avoid_action_t other_side (car_avoid_action_t side)
 /**
  * @brief Adjust a level ground speed for what the IMU says underfoot.
  *
- * Climbing needs more than level ground or the car stalls on the face of
- * the hump; descending needs less or it runs away and lands hard. Rough
- * ground gets the descent speed whichever way it is pointing, because the
- * wheels are not reliably in contact.
+ * Climbing keeps the asked speed: the speed loop adds the power the slope
+ * needs as it slows the wheels. Descending needs less or the car runs
+ * away and lands hard. Rough ground gets the descent speed whichever way
+ * it is pointing, because the wheels are not reliably in contact.
  *
  * NOTE: Pitch is frozen while the accelerometer cannot be believed, and a
  * car climbing a bump is exactly when that happens. The climb is
@@ -1452,14 +1657,14 @@ static uint16_t terrain_speed (uint16_t level_speed)
     uint16_t           speed = level_speed;
     car_motion_event_t event = CAR_MOTION_STATIONARY;
 
-    if (g_b_has_imu && (CAR_OK == imu_get_event(&event)))
+    if (gb_has_imu && (CAR_OK == imu_get_event(&event)))
     {
         if (CAR_MOTION_CLIMBING == event)
         {
-            speed = CAR_CLIMB_SPEED_MM_PER_SEC;
+            /* Keep the asked speed, see above. */
         }
         else if ((CAR_MOTION_DESCENDING == event)
-                 || !imu_is_terrain_stable())
+                 || (!imu_is_terrain_stable()))
         {
             speed = CAR_DESCEND_SPEED_MM_PER_SEC;
         }
@@ -1474,7 +1679,7 @@ static uint16_t terrain_speed (uint16_t level_speed)
     if (speed != s_reported)
     {
         CAR_LOG(CAR_LOG_INFO, "terrain speed %u, event %d, pitch ok %d\n",
-                speed, (int)event, imu_is_pitch_trusted());
+                speed, (int32_t)event, imu_is_pitch_trusted());
         s_reported = speed;
     }
 
@@ -1500,30 +1705,11 @@ static uint32_t distance_now (void)
  */
 static void publish_telemetry (void)
 {
-    motion_state_t     motion        = { 0 };
-    car_hump_t         hump          = { 0 };
-    int16_t            pitch_deg     = 0;
-    int16_t            heading_deg   = 0;
-    int16_t            rate_dps      = 0;
-    uint16_t           rough_milli_g = 0u;
-    car_motion_event_t event         = CAR_MOTION_STATIONARY;
-    bool               b_trusted     = false;
-    bool               b_stable      = true;
+    motion_state_t motion = { 0 };
 
     (void)motion_get_state(&motion);
 
-    if (g_b_has_imu)
-    {
-        (void)imu_get_peak_hump(&hump);
-        (void)imu_get_orientation(&pitch_deg, &heading_deg);
-        (void)imu_get_turn_rate_dps(&rate_dps);
-        (void)imu_get_event(&event);
-        (void)imu_get_terrain_roughness(&rough_milli_g);
-        b_trusted = imu_is_pitch_trusted();
-        b_stable  = imu_is_terrain_stable();
-    }
-
-    if (E_OK == tk_loc_mtx(g_telemetry_mutex, TMO_FEVR))
+    if (E_OK == tk_loc_mtx(gh_telemetry_mutex, TMO_FEVR))
     {
         (void)line_get_sensor_mask(&g_telemetry.line_sensor_mask);
 
@@ -1532,21 +1718,136 @@ static void publish_telemetry (void)
         g_telemetry.encoder_count_left  = motion.encoder_count_left;
         g_telemetry.encoder_count_right = motion.encoder_count_right;
         g_telemetry.total_distance_mm   = motion.distance_mm;
-        g_telemetry.peak_hump_height_mm = hump.peak_height_mm;
-        g_telemetry.pitch_deg             = pitch_deg;
-        g_telemetry.b_pitch_trusted       = b_trusted;
-        g_telemetry.heading_deg           = heading_deg;
-        g_telemetry.turn_rate_dps         = rate_dps;
-        g_telemetry.motion_event          = event;
-        g_telemetry.b_terrain_stable      = b_stable;
-        g_telemetry.terrain_rough_milli_g = rough_milli_g;
+        g_telemetry.action              = g_action;
         /* Latched by the collision state so a hit still shows in the
          * next message even though reading it in the IMU clears it. */
-        g_telemetry.b_collision           = (CAR_STATE_COLLISION == g_state);
+        g_telemetry.b_collision         = (CAR_STATE_COLLISION == g_state);
+
+        if (gb_has_imu)
+        {
+            (void)imu_get_peak_hump(&g_telemetry.peak_hump_height_mm);
+            (void)imu_get_orientation(&g_telemetry.pitch_deg,
+                                      &g_telemetry.heading_deg);
+            (void)imu_get_turn_rate_dps(&g_telemetry.turn_rate_dps);
+            (void)imu_get_event(&g_telemetry.motion_event);
+            (void)imu_get_terrain_roughness(
+                &g_telemetry.terrain_rough_milli_g);
+            (void)imu_get_last_hump(&g_telemetry.last_hump_height_mm);
+            (void)imu_get_hump_count(&g_telemetry.hump_count);
+            (void)imu_get_accel_magnitude(&g_telemetry.accel_milli_g);
+            g_telemetry.b_pitch_trusted  = imu_is_pitch_trusted();
+            g_telemetry.b_terrain_stable = imu_is_terrain_stable();
+            g_telemetry.b_on_hump        = imu_is_hump_detected();
+        }
 
         (void)comms_publish_telemetry(&g_telemetry);
-        (void)tk_unl_mtx(g_telemetry_mutex);
+        (void)tk_unl_mtx(gh_telemetry_mutex);
     }
+}
+
+/**
+ * @brief Publish the terrain status from the latest telemetry snapshot.
+ *
+ * NOTE: publish_telemetry() refreshes the snapshot every
+ * CAR_TELEMETRY_PERIOD_MSEC, so this reads nothing from the IMU itself.
+ */
+static void publish_terrain (void)
+{
+    if (E_OK == tk_loc_mtx(gh_telemetry_mutex, TMO_FEVR))
+    {
+        (void)comms_publish_terrain(&g_telemetry);
+        (void)tk_unl_mtx(gh_telemetry_mutex);
+    }
+}
+
+/**
+ * @brief What the car is doing right now, for telemetry.
+ *
+ * @return The action, from the state and what that state is part way
+ *         through.
+ */
+static car_action_t current_action (void)
+{
+    car_action_t action = CAR_ACTION_HALTED;
+
+    switch (g_state)
+    {
+        case CAR_STATE_INIT:
+            action = CAR_ACTION_STARTING;
+        break;
+
+        case CAR_STATE_FOLLOW_LINE:
+            if (REENTRY_OFF != g_reentry)
+            {
+                action = CAR_ACTION_ACQUIRING;
+            }
+            else if (gb_line_seen)
+            {
+                action = CAR_ACTION_FOLLOWING;
+            }
+            else
+            {
+                action = CAR_ACTION_LINE_LOST;
+            }
+        break;
+
+        case CAR_STATE_DECODE_BARCODE:
+            action = CAR_ACTION_READING_BARCODE;
+        break;
+
+        case CAR_STATE_EXECUTE_TURN:
+            if (JUNCTION_WAIT == g_junction_phase)
+            {
+                action = CAR_ACTION_AT_JUNCTION;
+            }
+            else if (CAR_NAV_LEFT == g_active_command)
+            {
+                action = CAR_ACTION_TURNING_LEFT;
+            }
+            else if (CAR_NAV_RIGHT == g_active_command)
+            {
+                action = CAR_ACTION_TURNING_RIGHT;
+            }
+            else
+            {
+                action = CAR_ACTION_U_TURN;
+            }
+        break;
+
+        case CAR_STATE_AVOID_OBSTACLE:
+            if (gb_reversing)
+            {
+                action = CAR_ACTION_REVERSING;
+            }
+            else if (!gb_scan_done)
+            {
+                action = CAR_ACTION_SCANNING;
+            }
+            else if (gb_retracing)
+            {
+                action = CAR_ACTION_BACKING_OUT;
+            }
+            else
+            {
+                action = CAR_ACTION_DETOUR;
+            }
+        break;
+
+        case CAR_STATE_RECOVER_LINE:
+            action = CAR_ACTION_SEARCHING;
+        break;
+
+        case CAR_STATE_COLLISION:
+            action = CAR_ACTION_BACKING_OFF;
+        break;
+
+        case CAR_STATE_HALTED:
+        default:
+            action = CAR_ACTION_HALTED;
+        break;
+    }
+
+    return action;
 }
 
 /*** end of file ***/

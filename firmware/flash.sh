@@ -7,14 +7,14 @@
 #
 #   ./flash.sh              the whole car
 #   ./flash.sh motion       the motion bench
+#   ./flash.sh encoders     count encoder pulses by hand, motors held off
+#   ./flash.sh duty         find MOTOR_MIN_DUTY, on the floor
+#   ./flash.sh tuning       step response and accuracy runs for the report
 #   ./flash.sh line_barcode the line and barcode bench
 #   ./flash.sh imu_terrain  the IMU bench
 #   ./flash.sh scanning     the scanning bench
 #   ./flash.sh comms        the comms bench, needs the radio profile below
 #   ./flash.sh --wifi       the car with the radio and MQTT
-#   ./flash.sh --no-recover the car, but it never searches for the line
-#   ./flash.sh --no-encoders the car timed open loop, whatever car_config.h
-#                           says; works with a bench too, and with the others
 #   ./flash.sh --build-only motion   build it, do not flash
 #
 # The first flash of a blank Pico needs the BOOTSEL button: hold it while
@@ -30,14 +30,10 @@ export PICO_SDK_PATH
 BENCH=""
 WIFI=0
 FLASH=1
-NORECOVER=0
-NOENCODERS=0
 
 for arg in "$@"; do
     case "$arg" in
         --wifi)       WIFI=1 ;;
-        --no-recover) NORECOVER=1 ;;
-        --no-encoders) NOENCODERS=1 ;;
         --build-only) FLASH=0 ;;
         -*)           echo "unknown option $arg" >&2; exit 2 ;;
         *)            BENCH="$arg" ;;
@@ -67,15 +63,6 @@ fi
 
 [ -n "$BENCH" ] && ARGS="$ARGS BENCH=$BENCH"
 
-if [ "$NORECOVER" = "1" ]; then
-    if [ -n "$BENCH" ]; then
-        echo "--no-recover is a car option; benches do not run car_main" >&2
-        exit 2
-    fi
-    ARGS="$ARGS NO_RECOVER=1"
-fi
-
-[ "$NOENCODERS" = "1" ] && ARGS="$ARGS NO_ENCODERS=1"
 
 if [ "$BENCH" = "comms" ] && [ "$WIFI" = "0" ]; then
     echo "the comms bench needs the radio: ./flash.sh --wifi comms" >&2
@@ -84,8 +71,6 @@ fi
 
 WHAT="${BENCH:-the car}"
 [ "$WIFI" = "1" ] && WHAT="$WHAT with the radio"
-[ "$NORECOVER" = "1" ] && WHAT="$WHAT, no line search"
-[ "$NOENCODERS" = "1" ] && WHAT="$WHAT, no encoders"
 echo "building $WHAT"
 # shellcheck disable=SC2086
 if ! make $ARGS -j8; then

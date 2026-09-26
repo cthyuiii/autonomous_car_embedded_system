@@ -44,50 +44,31 @@
 #include "car_config.h"
 #include "car_hw.h"
 #include "car_log.h"
+#include "car_time.h"
 #include "motion.h"
-#include "scanning.h"
+#include "scan.h"
 
 #define BENCH_STARTUP_MSEC     3000u
-#define BENCH_TICK_MSEC          20u
 #define BENCH_SPEED_MM_PER_SEC  120u
 #define BENCH_SETTLE_MSEC       500u
-#define BENCH_DETOUR_STEPS        7u
-
-/** One leg of the box, the same shape car_main.c drives. */
-typedef struct
-{
-    bool     b_turn;        /* true turns, false drives forward */
-    bool     b_away;        /* turn away from the obstacle, else toward */
-    uint16_t amount;        /* degrees or mm */
-    char     description[24];
-} bench_leg_t;
-
-static bench_leg_t const g_legs[BENCH_DETOUR_STEPS] =
-{
-    { true,  true,  SCAN_DETOUR_TURN_DEG,  "turn away" },
-    { false, false, SCAN_DETOUR_SIDE_MM,   "step sideways" },
-    { true,  false, SCAN_DETOUR_TURN_DEG,  "turn back parallel" },
-    { false, false, SCAN_DETOUR_DEPTH_MM,  "drive past it" },
-    { true,  false, SCAN_DETOUR_TURN_DEG,  "turn in" },
-    { false, false, SCAN_DETOUR_SIDE_MM,   "step back in" },
-    { true,  true,  SCAN_DETOUR_TURN_DEG,  "turn straight" },
-};
 
 static uint16_t const g_angles_deg[SCAN_COARSE_ANGLE_COUNT] =
     SCAN_COARSE_ANGLES_DEG;
 
 static void wait_for_move (void);
 static void drive_straight (void);
+static void handle_obstacle (uint16_t range_mm);
+static void go_round (car_avoid_action_t action);
 static bool look_ahead (uint16_t * p_range_mm);
 static void report_angles (void);
 static bool run_detour (car_avoid_action_t side);
 static void retrace (car_avoid_action_t side, uint8_t driven);
-static void drive_leg (bench_leg_t const * p_leg, car_avoid_action_t side,
-                       bool b_undo);
+static void drive_leg (uint8_t index, car_avoid_action_t side, bool b_undo);
 
 INT usermain (void)
 {
     (void)tk_dly_tsk(BENCH_STARTUP_MSEC);
+    (void)car_time_start_ticks();
     CAR_LOG(CAR_LOG_INFO,
             "detour bench: straight until something is within %u mm\n",
             SCAN_OBSTACLE_RANGE_MM);
@@ -113,38 +94,46 @@ INT usermain (void)
 
     for (;;)
     {
-        uint16_t               range_mm = SONAR_MAX_RANGE_MM;
-        car_obstacle_profile_t profile  = { 0 };
-        car_avoid_action_t     action   = CAR_AVOID_STOP;
+        uint16_t range_mm = SONAR_MAX_RANGE_MM;
 
         drive_straight();
 
-        if (!look_ahead(&range_mm))
+        if (look_ahead(&range_mm))
         {
-            continue;
+            handle_obstacle(range_mm);
         }
+    }
+}
 
-        (void)motion_stop();
-        CAR_LOG(CAR_LOG_INFO, "\nobstacle at %u mm, stopping to look\n",
-                range_mm);
-        (void)tk_dly_tsk(BENCH_SETTLE_MSEC);
+/**
+ * @brief Stop, profile what is ahead and act on the plan, as the car does.
+ *
+ * @param[in] range_mm How far ahead the obstacle was seen.
+ */
+static void handle_obstacle (uint16_t range_mm)
+{
+    car_obstacle_profile_t profile = { 0 };
+    car_avoid_action_t     action  = CAR_AVOID_STOP;
 
-        report_angles();
+    (void)motion_stop();
+    CAR_LOG(CAR_LOG_INFO, "\nobstacle at %u mm, stopping to look\n",
+            range_mm);
+    (void)tk_dly_tsk(BENCH_SETTLE_MSEC);
+    report_angles();
 
-        if (CAR_OK != scan_fine(SCAN_MIN_ANGLE_DEG, SCAN_MAX_ANGLE_DEG,
-                                &profile))
-        {
-            CAR_LOG(CAR_LOG_ERROR, "scan_fine refused the arc\n");
-            continue;
-        }
-
+    if (CAR_OK != scan_fine(SCAN_MIN_ANGLE_DEG, SCAN_MAX_ANGLE_DEG,
+                            &profile))
+    {
+        CAR_LOG(CAR_LOG_ERROR, "scan_fine refused the arc\n");
+    }
+    else
+    {
         CAR_LOG(CAR_LOG_INFO,
                 "profile: valid %u bearing %d closest %u width %u, "
                 "clear left %u right %u\n",
                 profile.b_is_valid, profile.bearing_deg,
                 profile.closest_range_mm, profile.width_mm,
                 profile.clearance_left_mm, profile.clearance_right_mm);
-
         (void)scan_plan_avoidance(&profile, &action);
 
         switch (action)
@@ -152,50 +141,9 @@ INT usermain (void)
             case CAR_AVOID_LEFT:
             case CAR_AVOID_RIGHT:
             case CAR_AVOID_REVERSE:
-            {
-                car_avoid_action_t side  = action;
-                uint8_t            tries = 0u;
-
-                if (CAR_AVOID_REVERSE == action)
-                {
-                    /* Nothing measured clear, but the sonar only sees the
-                     * mouth of each lane. Back off and drive into one. */
-                    CAR_LOG(CAR_LOG_INFO,
-                            "decision: neither side clears %u mm, backing "
-                            "off to probe\n", SCAN_CLEARANCE_MIN_MM);
-                    (void)motion_move_backward(SCAN_REVERSE_MM);
-                    wait_for_move();
-                    side = CAR_AVOID_LEFT;
-                }
-                else
-                {
-                    CAR_LOG(CAR_LOG_INFO, "decision: go %s (action %d)\n",
-                            (CAR_AVOID_LEFT == action) ? "LEFT" : "RIGHT",
-                            action);
-                }
-
-                while (tries < CAR_MAX_DETOUR_ATTEMPTS)
-                {
-                    if (run_detour(side))
-                    {
-                        break;
-                    }
-
-                    side = (CAR_AVOID_LEFT == side) ? CAR_AVOID_RIGHT
-                                                    : CAR_AVOID_LEFT;
-                    tries++;
-                    CAR_LOG(CAR_LOG_INFO, "back at the start, trying %s\n",
-                            (CAR_AVOID_LEFT == side) ? "left" : "right");
-                }
-
-                if (tries >= CAR_MAX_DETOUR_ATTEMPTS)
-                {
-                    CAR_LOG(CAR_LOG_ERROR,
-                            "no lane free after %u tries\n", tries);
-                    (void)motion_stop();
-                    (void)tk_dly_tsk(BENCH_SETTLE_MSEC);
-                }
-            }
+                /* Sized from this profile, as the car sizes them. */
+                (void)scan_detour_plan(&profile);
+                go_round(action);
             break;
 
             case CAR_AVOID_CONTINUE:
@@ -210,8 +158,58 @@ INT usermain (void)
                 (void)tk_dly_tsk(BENCH_SETTLE_MSEC);
             break;
         }
+    }
 
-        (void)motion_set_speed(BENCH_SPEED_MM_PER_SEC);
+    (void)motion_set_speed(BENCH_SPEED_MM_PER_SEC);
+}
+
+/**
+ * @brief Go round on the planned side, trying the other side each time a
+ *        lane turns out to be blocked.
+ *
+ * @param[in] action CAR_AVOID_LEFT, CAR_AVOID_RIGHT or CAR_AVOID_REVERSE.
+ */
+static void go_round (car_avoid_action_t action)
+{
+    car_avoid_action_t side   = action;
+    uint8_t            tries  = 0u;
+    bool               b_done = false;
+
+    if (CAR_AVOID_REVERSE == action)
+    {
+        /* Nothing measured clear, but the sonar only sees the mouth of
+         * each lane. Back off and drive into one. */
+        CAR_LOG(CAR_LOG_INFO, "decision: neither side clears %u mm, "
+                "backing off to probe\n", SCAN_CLEARANCE_MIN_MM);
+        (void)motion_move_backward(SCAN_REVERSE_MM);
+        wait_for_move();
+        side = CAR_AVOID_LEFT;
+    }
+    else
+    {
+        CAR_LOG(CAR_LOG_INFO, "decision: go %s (action %d)\n",
+                (CAR_AVOID_LEFT == action) ? "LEFT" : "RIGHT", action);
+    }
+
+    while ((tries < CAR_MAX_DETOUR_ATTEMPTS) && (!b_done))
+    {
+        b_done = run_detour(side);
+
+        if (!b_done)
+        {
+            side = (CAR_AVOID_LEFT == side) ? CAR_AVOID_RIGHT
+                                            : CAR_AVOID_LEFT;
+            tries++;
+            CAR_LOG(CAR_LOG_INFO, "back at the start, trying %s\n",
+                    (CAR_AVOID_LEFT == side) ? "left" : "right");
+        }
+    }
+
+    if (!b_done)
+    {
+        CAR_LOG(CAR_LOG_ERROR, "no lane free after %u tries\n", tries);
+        (void)motion_stop();
+        (void)tk_dly_tsk(BENCH_SETTLE_MSEC);
     }
 }
 
@@ -226,19 +224,19 @@ static void wait_for_move (void)
     do
     {
         (void)motion_tick();
-        (void)tk_dly_tsk(MOTION_TICK_PERIOD_MSEC);
+        car_time_wait_tick();
     }
     while (motion_is_busy());
 }
 
 /**
- * @brief Keep the wheels turning straight ahead for one bench tick.
+ * @brief Keep the wheels turning straight ahead for one kernel tick.
  */
 static void drive_straight (void)
 {
     (void)motion_drive_steer(0);
     (void)motion_tick();
-    (void)tk_dly_tsk(BENCH_TICK_MSEC);
+    car_time_wait_tick();
 }
 
 /**
@@ -282,47 +280,46 @@ static void report_angles (void)
 }
 
 /**
- * @brief Drive one leg, forwards as issued or backwards to undo it.
+ * @brief Drive one leg of the car's detour, or back to undo it, and wait.
  *
- * @param[in] p_step Leg to drive.
+ * @param[in] index  Leg, 0 to SCAN_DETOUR_LEGS - 1.
  * @param[in] side   CAR_AVOID_LEFT or CAR_AVOID_RIGHT, the way round.
- * @param[in] b_undo true to reverse the leg instead of driving it.
+ * @param[in] b_undo true to undo the leg instead of driving it.
  */
-static void drive_leg (bench_leg_t const * p_leg, car_avoid_action_t side,
-                       bool b_undo)
+static void drive_leg (uint8_t index, car_avoid_action_t side, bool b_undo)
 {
-    if (p_leg->b_turn)
+    car_avoid_action_t action = CAR_AVOID_STOP;
+    uint16_t           amount = 0u;
+    char const *       p_move = "back";
+    char const *       p_unit = "mm";
+
+    (void)scan_detour_get_leg(index, side, b_undo, &action, &amount);
+
+    if (CAR_AVOID_LEFT == action)
     {
-        bool b_left = (CAR_AVOID_LEFT == side);
-
-        if (!p_leg->b_away)
-        {
-            b_left = !b_left;
-        }
-
-        if (b_undo)
-        {
-            b_left = !b_left;
-        }
-
-        if (b_left)
-        {
-            (void)motion_turn_left(p_leg->amount);
-        }
-        else
-        {
-            (void)motion_turn_right(p_leg->amount);
-        }
+        p_move = "left";
+        p_unit = "deg";
+        (void)motion_turn_left(amount);
     }
-    else if (b_undo)
+    else if (CAR_AVOID_RIGHT == action)
     {
-        (void)motion_move_backward(p_leg->amount);
+        p_move = "right";
+        p_unit = "deg";
+        (void)motion_turn_right(amount);
+    }
+    else if (CAR_AVOID_CONTINUE == action)
+    {
+        p_move = "forward";
+        (void)motion_move_forward(amount);
     }
     else
     {
-        (void)motion_move_forward(p_leg->amount);
+        (void)motion_move_backward(amount);
     }
 
+    CAR_LOG(CAR_LOG_INFO, "  %s %u/%u  %s %u %s\n",
+            b_undo ? "undo" : "leg", index + 1u, SCAN_DETOUR_LEGS, p_move,
+            amount, p_unit);
     wait_for_move();
 }
 
@@ -344,9 +341,7 @@ static void retrace (car_avoid_action_t side, uint8_t driven)
     while (0u != index)
     {
         index--;
-        CAR_LOG(CAR_LOG_INFO, "  undo %u/%u  %s\n", index + 1u, driven,
-                g_legs[index].description);
-        drive_leg(&g_legs[index], side, true);
+        drive_leg(index, side, true);
     }
 }
 
@@ -368,42 +363,25 @@ static bool run_detour (car_avoid_action_t side)
     uint8_t index  = 0u;
     bool    b_done = true;
 
-    for (index = 0u; index < BENCH_DETOUR_STEPS; index++)
+    for (index = 0u; index < SCAN_DETOUR_LEGS; index++)
     {
-        bench_leg_t const * p_leg    = &g_legs[index];
-        uint16_t            range_mm = SONAR_MAX_RANGE_MM;
+        car_avoid_action_t action   = CAR_AVOID_STOP;
+        uint16_t           amount   = 0u;
+        uint16_t           range_mm = SONAR_MAX_RANGE_MM;
 
-        if (!p_leg->b_turn && look_ahead(&range_mm))
+        (void)scan_detour_get_leg(index, side, false, &action, &amount);
+
+        if ((CAR_AVOID_CONTINUE == action) && (look_ahead(&range_mm)))
         {
             CAR_LOG(CAR_LOG_INFO,
                     "  leg %u/%u blocked at %u mm, backing out\n",
-                    index + 1u, BENCH_DETOUR_STEPS, range_mm);
+                    index + 1u, SCAN_DETOUR_LEGS, range_mm);
             retrace(side, index);
             b_done = false;
             break;
         }
 
-        if (p_leg->b_turn)
-        {
-            bool b_left = (CAR_AVOID_LEFT == side);
-
-            if (!p_leg->b_away)
-            {
-                b_left = !b_left;
-            }
-
-            CAR_LOG(CAR_LOG_INFO, "  leg %u/%u  %s %u deg %s\n",
-                    index + 1u, BENCH_DETOUR_STEPS, p_leg->description,
-                    p_leg->amount, b_left ? "left" : "right");
-        }
-        else
-        {
-            CAR_LOG(CAR_LOG_INFO, "  leg %u/%u  %s %u mm\n",
-                    index + 1u, BENCH_DETOUR_STEPS, p_leg->description,
-                    p_leg->amount);
-        }
-
-        drive_leg(p_leg, side, false);
+        drive_leg(index, side, false);
     }
 
     if (b_done)

@@ -24,6 +24,7 @@ Telemetry on `car/telemetry`, one JSON object every 200 ms:
 | Key           | Meaning                                              |
 |---------------|------------------------------------------------------|
 | state         | car_mission_state_t, 0 init to 6 halted, 7 collision |
+| action        | what the car is doing now, as text, table below      |
 | speed         | average wheel speed, mm per second                   |
 | encl, encr    | encoder counts since boot                            |
 | mask          | line sensor bits, 1 left, 2 barcode, 4 right         |
@@ -35,6 +36,40 @@ Telemetry on `car/telemetry`, one JSON object every 200 ms:
 | obst.range    | closest return, mm                                   |
 | obst.width    | estimated width, mm                                  |
 | obst.left, obst.right | clearance either side, mm, 0 unknown         |
+| imu.*         | pitch, ok, head, rate, event, hit, stable, rough     |
+
+| `action`               | When                                         |
+|------------------------|----------------------------------------------|
+| starting               | before the first state                       |
+| following line         | on the line                                  |
+| turning onto line      | hard turn back onto the line after leaving it|
+| line lost              | neither line sensor has seen the line lately |
+| reading barcode        | taking a decoded command                     |
+| stopped at junction    | waiting for a command at a cross             |
+| turning left, turning right, u-turn | the junction's turn             |
+| scanning obstacle      | profiling what is ahead                      |
+| going round obstacle   | driving the detour                           |
+| reversing to probe     | backing off to try a lane                    |
+| backing out of lane    | undoing the legs of a blocked lane           |
+| searching for line     | the search after a detour or a lost line     |
+| backing off after hit  | after an IMU hit or a stalled wheel          |
+| halted                 | stopped for good                             |
+
+Terrain status on `car/terrain` every 2 s (`CAR_TERRAIN_PERIOD_MSEC`), for
+`imu_terrain/terrain_report.md`:
+
+| Key     | Meaning                                                   |
+|---------|-----------------------------------------------------------|
+| pitch   | degrees, nose up positive, frozen while `ok` is 0         |
+| ok      | 1 while pitch can be believed                             |
+| mag     | filtered acceleration magnitude, milli g                  |
+| rough   | terrain roughness, milli g                                |
+| terrain | STABLE or ROUGH                                           |
+| event   | STILL, ACCEL, TURN, CLIMB, DESCEND or IMPACT              |
+| on_hump | 1 while on a hump                                         |
+| humps   | humps crossed this run                                    |
+| last_mm | height of the most recent hump                            |
+| peak_mm | height of the highest hump this run                       |
 
 Heartbeat on `car/heartbeat` every second: `{"uptime_ms":N,"connected":1}`.
 
@@ -42,4 +77,4 @@ Heartbeat on `car/heartbeat` every second: `{"uptime_ms":N,"connected":1}`.
 |--------------------------------|-------|------------------------------|
 | Time to first MQTT connect     |       | from power on, seconds       |
 | Reconnect time after drop      |       | pull the broker, time it     |
-| Telemetry size per message     | 149   | measured on the broker       |
+| Telemetry size per message     |       | 268 bytes typical on the host, 336 at most |

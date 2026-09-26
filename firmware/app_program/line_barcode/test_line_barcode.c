@@ -17,17 +17,23 @@
 #include <stdint.h>
 
 #include "car_config.h"
-#include "line_barcode.h"
+#include "line.h"
 
 #define TEST_NARROW_USEC   30000u   /* 3 mm at 100 mm per second */
 #define TEST_WIDE_USEC     90000u
 #define TEST_QUIET_USEC   200000u
 #define TEST_ELEMENTS         29u
+#define TEST_CHARACTERS        3u   /* Start, data, stop */
+#define TEST_GROUP             9u   /* Elements per character */
 #define TEST_MASK_BARCODE    0x02u
 #define TEST_HOLD_USEC     (LINE_CENTRED_HOLD_MSEC * 1000u)
 
-/* Wide element flags for '*', 'L', '*', nine per character, MSB first. */
-static uint16_t const g_test_symbol[3] = { 0x094u, 0x043u, 0x094u };
+/* Wide element flags for '*', 'A', '*', nine per character, MSB first.
+ * A is Left in the course write-up's barcode table. */
+static uint16_t const g_test_symbol[TEST_CHARACTERS] =
+{
+    0x094u, 0x109u, 0x094u
+};
 
 static void              build_symbol (uint32_t * p_widths);
 static car_nav_command_t cross_symbol (uint32_t const * p_widths,
@@ -43,6 +49,7 @@ int main (void)
     uint32_t          now     = 0u;
     uint8_t           low     = 0u;
     uint8_t           high    = TEST_ELEMENTS - 1u;
+    uint8_t           index   = 0u;
 
     assert(CAR_OK == line_init());
     assert(CAR_OK == line_calibrate());
@@ -53,9 +60,9 @@ int main (void)
     assert(CAR_OK == line_get_sensor_mask(&mask));
     assert(CAR_ERR_RANGE == line_get_sensor_mask(NULL));
     assert(false == line_is_at_junction());
-    assert(CAR_ERR_NO_DATA == barcode_poll(&command));
+    assert(CAR_ERR_NO_DATA == line_poll_barcode(&command));
     assert(CAR_ERR_RANGE == line_get_health(NULL));
-    assert(CAR_ERR_RANGE == barcode_poll(NULL));
+    assert(CAR_ERR_RANGE == line_poll_barcode(NULL));
     assert(CAR_NAV_NONE == command);
 
     /* Health starts empty: nothing has shown both levels yet. */
@@ -92,12 +99,17 @@ int main (void)
     /* A junction is both line sensors dark, and needs the reading to hold.
      * The barcode sensor plays no part in it. */
     line_host_inject(0x05u, 0u);
-    assert(CAR_OK == line_get_position(&error));
-    assert(false == line_is_at_junction());
+
+    for (index = 1u; index < LINE_JUNCTION_SAMPLES; index++)
+    {
+        assert(CAR_OK == line_get_position(&error));
+        assert(false == line_is_at_junction());
+    }
+
     assert(CAR_OK == line_get_position(&error));
     assert(true == line_is_at_junction());
 
-    /* Forward crossing of *L* decodes to a left turn. */
+    /* Forward crossing of *A* decodes to a left turn. */
     build_symbol(widths);
     assert(CAR_NAV_LEFT == cross_symbol(widths, &now));
 
@@ -114,6 +126,15 @@ int main (void)
 
     assert(CAR_NAV_LEFT == cross_symbol(widths, &now));
 
+    /* The start-up check names a sensor that reads dark where it should
+     * see floor, and passes once they all see floor. */
+    line_host_inject(0x04u, now);
+    assert(CAR_ERR_RANGE == line_calibrate());
+    assert(CAR_OK == line_get_sensor_mask(&mask));
+    assert(0x04u == mask);
+    line_host_inject(0x00u, now);
+    assert(CAR_OK == line_calibrate());
+
     return 0;
 }
 
@@ -127,12 +148,13 @@ static void build_symbol (uint32_t * p_widths)
     uint8_t character = 0u;
     uint8_t index     = 0u;
 
-    for (character = 0u; character < 3u; character++)
+    for (character = 0u; character < TEST_CHARACTERS; character++)
     {
         uint8_t element = 0u;
 
-        for (element = 0u; element < 9u; element++)
+        for (element = 0u; element < TEST_GROUP; element++)
         {
+            /* Cast: 0x100 shifted right stays within nine bits. */
             bool b_wide = (0u != (g_test_symbol[character]
                                   & (uint16_t)(0x100u >> element)));
 
@@ -140,7 +162,7 @@ static void build_symbol (uint32_t * p_widths)
             index++;
         }
 
-        if (character < 2u)
+        if ((character + 1u) < TEST_CHARACTERS)
         {
             p_widths[index] = TEST_NARROW_USEC;
             index++;
@@ -164,7 +186,7 @@ static car_nav_command_t cross_symbol (uint32_t const * p_widths,
     uint8_t           index   = 0u;
 
     line_host_inject(0u, *p_now_usec);
-    (void)barcode_poll(&decoded);
+    (void)line_poll_barcode(&decoded);
     *p_now_usec += TEST_QUIET_USEC;
 
     for (index = 0u; index < TEST_ELEMENTS; index++)
@@ -172,13 +194,13 @@ static car_nav_command_t cross_symbol (uint32_t const * p_widths,
         uint8_t mask = (0u == (index % 2u)) ? TEST_MASK_BARCODE : 0u;
 
         line_host_inject(mask, *p_now_usec);
-        assert(CAR_ERR_NO_DATA == barcode_poll(&decoded));
+        assert(CAR_ERR_NO_DATA == line_poll_barcode(&decoded));
         *p_now_usec += p_widths[index];
     }
 
     line_host_inject(0u, *p_now_usec);
 
-    if (CAR_OK == barcode_poll(&decoded))
+    if (CAR_OK == line_poll_barcode(&decoded))
     {
         command = decoded;
     }

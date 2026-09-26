@@ -1,4 +1,4 @@
-/** @file scanning.h
+/** @file scan.h
  *
  * @brief Servo swept HC-SR04 scanning, obstacle profiling and avoidance.
  *
@@ -36,7 +36,9 @@
  * car back to the line, but it drives nothing and reads no sensor itself.
  * The controller asks for each step, executes it through the motion API,
  * reports what the line sensors saw, and asks again. That keeps the module
- * free of any other module's header, as the layering requires.
+ * free of any other module's header, as the layering requires. The box
+ * detour round an obstacle works the same way: this module sizes the legs
+ * and hands them out, the controller drives them.
  *
  * Units: angles in degrees where 90 is straight ahead and larger angles
  * look to the car's left, distances in mm. Bearings in a profile are
@@ -47,13 +49,15 @@
  * with the team first.
  */
 
-#ifndef SCANNING_H
-#define SCANNING_H
+#ifndef SCAN_H
+#define SCAN_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "car_types.h"
+#include "car.h"
+
+#define SCAN_DETOUR_LEGS    7u   /* Legs in the box detour */
 
 /**
  * @brief Configure the servo PWM and the sonar trigger and echo pins.
@@ -166,6 +170,47 @@ car_status_t scan_recover_line (void);
 car_status_t scan_recover_get_step (car_avoid_action_t * p_action,
                                     uint16_t * p_amount);
 
+/**
+ * @brief Size the box detour from the obstacle the fine scan measured.
+ *
+ * The box is turn away, step sideways, turn back, drive past, turn in,
+ * step back, turn straight, so it ends parallel to the original heading.
+ * Only the sideways and drive past legs change size. The sideways leg
+ * clears half the obstacle plus SCAN_DETOUR_MARGIN_MM, and the car covers
+ * it at SCAN_DETOUR_TURN_DEG, so the straight distance is divided by
+ * sin 45.
+ *
+ * NOTE: Nothing measures how deep an obstacle is from the front, only how
+ * wide it looks. Depth is therefore the width plus the car's length plus
+ * the margin, a guess that holds for boxes and fails for walls. Pinging
+ * before each drive leg is what catches the failure.
+ *
+ * @param[in] p_profile Result of the fine scan. NULL or a zero width keeps
+ *                      the fixed SCAN_DETOUR_SIDE_MM and
+ *                      SCAN_DETOUR_DEPTH_MM legs.
+ *
+ * @return CAR_OK.
+ */
+car_status_t scan_detour_plan (car_obstacle_profile_t const * p_profile);
+
+/**
+ * @brief One leg of the planned detour, as a move to drive.
+ *
+ * @param[in]  index    Leg, 0 to SCAN_DETOUR_LEGS - 1.
+ * @param[in]  side     CAR_AVOID_LEFT or CAR_AVOID_RIGHT, the way round.
+ * @param[in]  b_undo   true for the move that undoes the leg: the same
+ *                      turn the other way, or the same drive in reverse.
+ * @param[out] p_action CAR_AVOID_LEFT or CAR_AVOID_RIGHT to turn,
+ *                      CAR_AVOID_CONTINUE to drive forward,
+ *                      CAR_AVOID_REVERSE to drive back.
+ * @param[out] p_amount Degrees for a turn, mm for a drive.
+ *
+ * @return CAR_OK, or CAR_ERR_RANGE for a bad index or a NULL pointer.
+ */
+car_status_t scan_detour_get_leg (uint8_t index, car_avoid_action_t side,
+                                  bool b_undo, car_avoid_action_t * p_action,
+                                  uint16_t * p_amount);
+
 #ifdef CAR_HOST_TEST
 /**
  * @brief Host test hook: the range every ranging reports from now on.
@@ -183,6 +228,6 @@ void scan_host_inject_range (uint16_t range_mm);
 void scan_host_get_servo (uint16_t * p_angle_deg, uint16_t * p_pulse_usec);
 #endif
 
-#endif /* SCANNING_H */
+#endif /* SCAN_H */
 
 /*** end of file ***/
