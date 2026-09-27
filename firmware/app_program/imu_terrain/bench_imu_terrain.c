@@ -163,7 +163,7 @@ static void print_status (void)
     (void)imu_get_event(&event);
     (void)imu_get_turn_rate_dps(&rate_dps);
     (void)imu_get_accel_magnitude(&milli_g);
-    (void)imu_get_peak_accel_magnitude(&peak_milli_g);
+    (void)imu_get_peak_jolt(&peak_milli_g);
     (void)imu_get_peak_hump(&hump_mm);
     (void)imu_get_terrain_roughness(&rough_milli_g);
 
@@ -171,7 +171,7 @@ static void print_status (void)
      * calibration, tilt, hump, peak, motion class, collision,
      * turn rate, and the terrain summary. */
     CAR_LOG(CAR_LOG_INFO,
-            "cal %d | pitch %d ok %d mag %u raw %u | "
+            "cal %d | pitch %d ok %d mag %u jolt %u | "
             "hump %d peak %u mm | "
             "event %s | hit %d | rate %d dps | heading %d | "
             "terrain %s rough %u\n",

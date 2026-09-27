@@ -68,6 +68,10 @@ static volatile bool     gb_backward_left          = false;  /* Phase B */
 static volatile bool     gb_backward_right         = false;
 static volatile uint8_t  g_disagree_left          = 0u;
 static volatile uint8_t  g_disagree_right         = 0u;
+static volatile uint32_t g_glitches_left          = 0u;
+static volatile uint32_t g_glitches_right         = 0u;
+static volatile uint32_t g_reversals_left         = 0u;
+static volatile uint32_t g_reversals_right        = 0u;
 
 static motion_state_t g_state             = { 0 };
 static wheel_t        g_left              = { 0 };
@@ -98,6 +102,7 @@ static uint16_t     interval_to_speed (uint32_t interval_usec,
 static uint32_t     now_usec (void);
 static void         note_direction (volatile bool * p_backward,
                                     volatile uint8_t * p_disagree,
+                                    volatile uint32_t * p_reversals,
                                     bool b_backward);
 static void         straighten (void);
 static int32_t      measure_encoders (void);
@@ -272,6 +277,10 @@ car_status_t motion_get_state (motion_state_t * p_state)
                       &unused, &unused);
         g_state.b_left_backward  = gb_backward_left;
         g_state.b_right_backward = gb_backward_right;
+        g_state.glitches_left    = g_glitches_left;
+        g_state.glitches_right   = g_glitches_right;
+        g_state.reversals_left   = g_reversals_left;
+        g_state.reversals_right  = g_reversals_right;
         *p_state = g_state;
         status   = CAR_OK;
     }
@@ -615,10 +624,12 @@ static void note_stall (wheel_t * p_wheel)
  *
  * @param[in,out] p_backward Wheel direction, true while going backward.
  * @param[in,out] p_disagree Pulses in a row that disagreed so far.
+ * @param[in,out] p_reversals Direction changes so far, one added per change.
  * @param[in]     b_backward What this pulse's phase B says.
  */
 static void note_direction (volatile bool * p_backward,
                             volatile uint8_t * p_disagree,
+                            volatile uint32_t * p_reversals,
                             bool b_backward)
 {
     if (b_backward == *p_backward)
@@ -629,6 +640,7 @@ static void note_direction (volatile bool * p_backward,
     {
         *p_backward = b_backward;
         *p_disagree = 0u;
+        (*p_reversals)++;
     }
     else
     {
@@ -699,13 +711,14 @@ void motion_host_inject_pulses (uint32_t left, uint32_t right,
 
     for (pulse = 0u; pulse < left; pulse++)
     {
-        note_direction(&gb_backward_left, &g_disagree_left, b_left_backward);
+        note_direction(&gb_backward_left, &g_disagree_left,
+                       &g_reversals_left, b_left_backward);
     }
 
     for (pulse = 0u; pulse < right; pulse++)
     {
         note_direction(&gb_backward_right, &g_disagree_right,
-                       b_right_backward);
+                       &g_reversals_right, b_right_backward);
     }
 
     g_encoder_count_left  += left;
@@ -867,24 +880,46 @@ static void encoder_isr (UINT intno)
 {
     uint32_t now = car_hw_usec();
 
+    /* A rising edge is noise if the pin has already dropped back, since a
+     * real pulse stays high for at least ENCODER_MIN_PULSE_USEC, or if it
+     * came too soon after the last pulse. Noise is counted as a glitch and
+     * otherwise ignored, timestamp included. */
     if (car_hw_gpio_rise_irq_take(ENCODER_LEFT_PIN))
     {
-        g_encoder_count_left++;
-        g_interval_usec_left = now - g_pulse_usec_left;
-        g_pulse_usec_left    = now;
-        note_direction(&gb_backward_left, &g_disagree_left,
-                       ((0u != ENCODER_LEFT_B_FORWARD)
-                        != car_hw_gpio_get(ENCODER_LEFT_B_PIN)));
+        if ((!car_hw_gpio_get(ENCODER_LEFT_PIN))
+            || ((now - g_pulse_usec_left) < ENCODER_MIN_PULSE_USEC))
+        {
+            g_glitches_left++;
+        }
+        else
+        {
+            g_encoder_count_left++;
+            g_interval_usec_left = now - g_pulse_usec_left;
+            g_pulse_usec_left    = now;
+            note_direction(&gb_backward_left, &g_disagree_left,
+                           &g_reversals_left,
+                           ((0u != ENCODER_LEFT_B_FORWARD)
+                            != car_hw_gpio_get(ENCODER_LEFT_B_PIN)));
+        }
     }
 
     if (car_hw_gpio_rise_irq_take(ENCODER_RIGHT_PIN))
     {
-        g_encoder_count_right++;
-        g_interval_usec_right = now - g_pulse_usec_right;
-        g_pulse_usec_right    = now;
-        note_direction(&gb_backward_right, &g_disagree_right,
-                       ((0u != ENCODER_RIGHT_B_FORWARD)
-                        != car_hw_gpio_get(ENCODER_RIGHT_B_PIN)));
+        if ((!car_hw_gpio_get(ENCODER_RIGHT_PIN))
+            || ((now - g_pulse_usec_right) < ENCODER_MIN_PULSE_USEC))
+        {
+            g_glitches_right++;
+        }
+        else
+        {
+            g_encoder_count_right++;
+            g_interval_usec_right = now - g_pulse_usec_right;
+            g_pulse_usec_right    = now;
+            note_direction(&gb_backward_right, &g_disagree_right,
+                           &g_reversals_right,
+                           ((0u != ENCODER_RIGHT_B_FORWARD)
+                            != car_hw_gpio_get(ENCODER_RIGHT_B_PIN)));
+        }
     }
 
     ClearInt(intno);

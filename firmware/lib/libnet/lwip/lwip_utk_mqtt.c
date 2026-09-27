@@ -62,6 +62,13 @@ static rx_slot_t              g_rx_ring[LWIP_UTK_MQTT_RX_SLOTS];
 static uint32_t               g_rx_head         = 0u;  // Fill, owner
 static uint32_t               g_rx_tail         = 0u;  // Pop, application
 
+/* The log stream: free running indices, masked into the buffer. The owner
+ * task sends from the tail in chunks of whole lines. */
+static char                   g_log[LWIP_UTK_MQTT_LOG_BYTES];
+static uint32_t               g_log_head        = 0u;  // Fill, application
+static uint32_t               g_log_tail        = 0u;  // Send, owner
+static char                   g_log_chunk[LWIP_UTK_MQTT_TX_PAYLOAD];
+
 static rx_slot_t              g_incoming;
 static bool                   gb_incoming_fits  = false;
 static bool                   gb_connecting     = false;
@@ -83,6 +90,7 @@ static void    keep_connected (uint32_t now);
 static void    start_connect (uint32_t now);
 static void    drain_publish_ring (void);
 static void    finish_slot (err_t err);
+static void    drain_log (void);
 
 void lwip_utk_mqtt_configure (lwip_utk_mqtt_config_t const * p_config)
 {
@@ -92,6 +100,7 @@ void lwip_utk_mqtt_configure (lwip_utk_mqtt_config_t const * p_config)
         g_config.host[LWIP_UTK_MQTT_HOST_LEN - 1u]              = '\0';
         g_config.client_id[LWIP_UTK_MQTT_ID_LEN - 1u]           = '\0';
         g_config.subscribe_topic[LWIP_UTK_MQTT_TOPIC_LEN - 1u]  = '\0';
+        g_config.log_topic[LWIP_UTK_MQTT_TOPIC_LEN - 1u]        = '\0';
         g_status.b_configured = (0 != ipaddr_aton(g_config.host,
                                                   &g_broker_address));
         g_status.b_connected  = false;
@@ -121,6 +130,35 @@ int32_t lwip_utk_mqtt_publish (char const * p_topic, void const * p_payload,
     }
 
     return result;
+}
+
+void lwip_utk_mqtt_log (char const * p_text, uint16_t length)
+{
+    uint32_t saved = 0u;
+    uint32_t index = 0u;
+
+    if ((NULL != p_text) && (0u != length))
+    {
+        (void)ISpinLock(&g_ring_lock, &saved);
+
+        /* Whole lines or nothing, so the stream never holds half a line. */
+        if ((LWIP_UTK_MQTT_LOG_BYTES - (g_log_head - g_log_tail)) >= length)
+        {
+            for (index = 0u; index < length; index++)
+            {
+                g_log[(g_log_head + index) & (LWIP_UTK_MQTT_LOG_BYTES - 1u)]
+                    = p_text[index];
+            }
+
+            g_log_head += length;
+        }
+        else
+        {
+            g_status.log_lines_lost++;
+        }
+
+        (void)ISpinUnlock(&g_ring_lock, saved);
+    }
 }
 
 int32_t lwip_utk_mqtt_receive (char * p_topic, uint16_t topic_size,
@@ -287,6 +325,7 @@ static void connection_cb (mqtt_client_t * p_client, void * p_arg,
     if (MQTT_CONNECT_ACCEPTED == status)
     {
         g_status.b_connected = true;
+        g_status.sessions++;
         /* Set after connect: the client is wiped on every connect call. */
         mqtt_set_inpub_callback(p_client, incoming_publish_cb,
                                 incoming_data_cb, NULL);
@@ -401,6 +440,7 @@ static void keep_connected (uint32_t now)
     if (g_status.b_connected)
     {
         drain_publish_ring();
+        drain_log();
     }
 }
 
@@ -488,6 +528,67 @@ static void finish_slot (err_t err)
     (void)ISpinLock(&g_ring_lock, &saved);
     g_tx_tail = (g_tx_tail + 1u) % LWIP_UTK_MQTT_TX_SLOTS;
     (void)ISpinUnlock(&g_ring_lock, saved);
+}
+
+/**
+ * @brief Send the oldest whole lines of the log stream as one message.
+ *
+ * Takes as many whole lines as fit one message and leaves off the last
+ * newline, which a subscriber prints anyway. A single line longer than a
+ * message goes as it is.
+ */
+static void drain_log (void)
+{
+    uint32_t saved = 0u;
+    uint32_t held  = 0u;
+    uint32_t take  = 0u;
+    uint32_t cut   = 0u;
+    uint32_t index = 0u;
+
+    (void)ISpinLock(&g_ring_lock, &saved);
+    held = g_log_head - g_log_tail;
+    (void)ISpinUnlock(&g_ring_lock, saved);
+
+    take = (held < LWIP_UTK_MQTT_TX_PAYLOAD) ? held
+                                             : LWIP_UTK_MQTT_TX_PAYLOAD;
+
+    /* Only the owner task moves the tail, so the text read here is not
+     * overwritten while it is copied out. */
+    for (index = 0u; index < take; index++)
+    {
+        g_log_chunk[index] =
+            g_log[(g_log_tail + index) & (LWIP_UTK_MQTT_LOG_BYTES - 1u)];
+
+        if ('\n' == g_log_chunk[index])
+        {
+            cut = index + 1u;
+        }
+    }
+
+    if (0u == cut)
+    {
+        cut = (LWIP_UTK_MQTT_TX_PAYLOAD == take) ? take : 0u;
+    }
+
+    if ((0u != cut) && ('\0' != g_config.log_topic[0]))
+    {
+        /* Cast: at most LWIP_UTK_MQTT_TX_PAYLOAD, well inside u16_t. */
+        u16_t length = (u16_t)(('\n' == g_log_chunk[cut - 1u]) ? (cut - 1u)
+                                                               : cut);
+        err_t err    = mqtt_publish(&g_client, g_config.log_topic,
+                                    g_log_chunk, length, UTK_MQTT_QOS,
+                                    UTK_MQTT_NO_RETAIN, NULL, NULL);
+
+        /* Anything but a send stays for the next poll: a full output
+         * ring or a connection that dropped under us are both passing,
+         * and a chunk always fits the ring once it is empty. */
+        if (ERR_OK == err)
+        {
+            (void)ISpinLock(&g_ring_lock, &saved);
+            g_log_tail += cut;
+            (void)ISpinUnlock(&g_ring_lock, saved);
+        }
+    }
 }
 
 /*** end of file ***/

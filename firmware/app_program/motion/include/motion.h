@@ -31,6 +31,12 @@ typedef struct
     bool     b_right_encoder;    /* Has ever produced a pulse */
     bool     b_left_backward;    /* Phase B: last pulse turned backward */
     bool     b_right_backward;   /* Phase B: last pulse turned backward */
+    /* Encoder noise since boot: edges too soon after the last pulse to be
+     * real, thrown away, and changes of direction phase B reported. */
+    uint32_t glitches_left;
+    uint32_t glitches_right;
+    uint32_t reversals_left;
+    uint32_t reversals_right;
     bool     b_is_busy;
 } motion_state_t;
 

@@ -158,6 +158,19 @@ bool line_is_at_junction (void);
  */
 car_status_t line_poll_barcode (car_nav_command_t * p_command);
 
+/**
+ * @brief The last barcode character decoded, and how many so far.
+ *
+ * Every symbol with a good start and stop counts, course command or not,
+ * so a misprinted or foreign barcode still shows up in telemetry.
+ *
+ * @param[out] p_symbol The character, '\0' before the first.
+ * @param[out] p_count  Symbols decoded since boot.
+ *
+ * @return CAR_OK, or CAR_ERR_RANGE if either pointer is NULL.
+ */
+car_status_t line_get_last_barcode (char * p_symbol, uint16_t * p_count);
+
 #ifdef CAR_HOST_TEST
 /**
  * @brief Host test hook: the sensor mask and clock the module reads next.

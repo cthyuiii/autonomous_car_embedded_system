@@ -84,6 +84,8 @@ static bool     gb_touched         = false;
 static uint32_t g_touch_usec       = 0u;
 static run_t    g_runs[BARCODE_RUNS_MAX];
 static uint8_t  g_run_count        = 0u;
+static char     g_last_symbol      = '\0';
+static uint16_t g_symbol_count     = 0u;
 static bool     gb_run_started      = false;
 static bool     gb_run_dark         = false;
 static uint32_t g_run_start_usec   = 0u;
@@ -293,6 +295,20 @@ car_status_t line_poll_barcode (car_nav_command_t * p_command)
     return status;
 }
 
+car_status_t line_get_last_barcode (char * p_symbol, uint16_t * p_count)
+{
+    car_status_t status = CAR_ERR_RANGE;
+
+    if ((NULL != p_symbol) && (NULL != p_count))
+    {
+        *p_symbol = g_last_symbol;
+        *p_count  = g_symbol_count;
+        status    = CAR_OK;
+    }
+
+    return status;
+}
+
 /**
  * @brief Time the bar or space that one barcode sensor edge just ended.
  *
@@ -360,8 +376,10 @@ static car_nav_command_t end_run (uint32_t width_usec, bool b_dark)
 
     if ('\0' != symbol)
     {
-        command     = command_for(symbol);
-        g_run_count = 0u;
+        command       = command_for(symbol);
+        g_run_count   = 0u;
+        g_last_symbol = symbol;
+        g_symbol_count++;
     }
 
     return command;

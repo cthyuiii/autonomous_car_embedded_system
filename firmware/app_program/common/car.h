@@ -134,6 +134,10 @@ typedef struct
     bool                   b_on_hump;
     uint16_t               hump_count;
     uint16_t               last_hump_height_mm;
+    /* Appended for "barcode detected": the last Code 39 character read,
+     * '\0' before the first, and how many have been read. */
+    char                   last_barcode;
+    uint16_t               barcode_count;
 } car_telemetry_t;
 
 #endif /* CAR_H */

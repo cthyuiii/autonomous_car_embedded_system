@@ -90,7 +90,7 @@ static uint32_t g_prev_distance_mm       = 0u;
 static car_motion_event_t g_event        = CAR_MOTION_STATIONARY;
 static uint8_t  g_event_hold             = 0u;
 static bool     gb_collision_latched      = false;
-static uint16_t g_accel_peak_mg          = IMU_GRAVITY_MILLI_G;
+static uint16_t g_jolt_peak_mg           = 0u;
 /* What this sensor reads for one g, taken level and still by
  * imu_calibrate(). Not every module reads 1000: one on this car reads
  * about 794, which against a fixed 1000 looked like constant shaking,
@@ -131,7 +131,7 @@ car_status_t imu_init (void)
     g_event             = CAR_MOTION_STATIONARY;
     g_event_hold        = 0u;
     gb_collision_latched = false;
-    g_accel_peak_mg     = IMU_GRAVITY_MILLI_G;
+    g_jolt_peak_mg      = 0u;
     g_gravity_mg        = IMU_GRAVITY_MILLI_G;
     gb_on_hump           = false;
     g_hump_milli_mm     = 0;
@@ -205,7 +205,7 @@ car_status_t imu_calibrate (void)
                                           g_accel_mg[IMU_UP_AXIS]);
             g_accel_ref_fwd_mg = g_accel_mg[IMU_FORWARD_AXIS];
             g_gravity_mg     = (uint16_t)magnitude;   /* 700 to 1300 here */
-            g_accel_peak_mg  = g_gravity_mg;
+            g_jolt_peak_mg   = 0u;
             gb_calibrated    = true;
         }
     }
@@ -220,24 +220,27 @@ car_status_t imu_update (void)
 
     if (hw_read(&raw))
     {
-        int32_t magnitude = 0;
+        /* Collisions are judged on the jolt: how far this raw sample sits
+         * from the filtered vector, before the sample is filtered in. The
+         * vector's length would miss a knock from the side, which is
+         * square to gravity and barely lengthens it, while slow tilt on a
+         * hump moves the filtered vector along with it. */
+        int32_t  diff_x = raw.accel_mg[0] - g_accel_mg[0];
+        int32_t  diff_y = raw.accel_mg[1] - g_accel_mg[1];
+        int32_t  diff_z = raw.accel_mg[2] - g_accel_mg[2];
+        /* Casts: each difference is under 2 x 8 g, so each square is
+         * under 2^28 and the sum of three fits a uint32_t, and its root,
+         * under 28000, fits a uint16_t. */
+        uint16_t jolt   = (uint16_t)isqrt((uint32_t)(diff_x * diff_x)
+                                          + (uint32_t)(diff_y * diff_y)
+                                          + (uint32_t)(diff_z * diff_z));
 
-        /* Impacts are sharp, so the collision test uses the raw sample. */
-        magnitude = (int32_t)isqrt(
-            (uint32_t)((int32_t)raw.accel_mg[0] * raw.accel_mg[0])
-            + (uint32_t)((int32_t)raw.accel_mg[1] * raw.accel_mg[1])
-            + (uint32_t)((int32_t)raw.accel_mg[2] * raw.accel_mg[2]));
-
-        /* Casts: the magnitude of three 8 g axes is under 14000 mg, so
-         * it fits a uint16_t, and a uint16_t fits an int32_t. */
-        if (magnitude > (int32_t)g_accel_peak_mg)
+        if (jolt > g_jolt_peak_mg)
         {
-            g_accel_peak_mg = (uint16_t)magnitude;
+            g_jolt_peak_mg = jolt;
         }
 
-        /* Casts: uint16_t and a small constant, exact as int32_t. */
-        if ((magnitude - (int32_t)g_gravity_mg)
-            > (int32_t)IMU_COLLISION_THRESHOLD_MILLI_G)
+        if (jolt > IMU_COLLISION_THRESHOLD_MILLI_G)
         {
             gb_collision_latched = true;
         }
@@ -343,15 +346,15 @@ car_status_t imu_get_turn_rate_dps (int16_t * p_rate_dps)
     return status;
 }
 
-car_status_t imu_get_peak_accel_magnitude (uint16_t * p_milli_g)
+car_status_t imu_get_peak_jolt (uint16_t * p_milli_g)
 {
     car_status_t status = CAR_ERR_RANGE;
 
     if (NULL != p_milli_g)
     {
-        *p_milli_g      = g_accel_peak_mg;
-        g_accel_peak_mg = g_gravity_mg;
-        status          = CAR_OK;
+        *p_milli_g     = g_jolt_peak_mg;
+        g_jolt_peak_mg = 0u;
+        status         = CAR_OK;
     }
 
     return status;

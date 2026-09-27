@@ -315,13 +315,36 @@ cd firmware
 screen $(ls /dev/cu.usbmodem* | head -1) 115200
 ```
 
+**Off the cable.** Any bench, and the car, can run with the USB cable
+unplugged. Build it with `--wifi` and every console line is also
+published on `car/log`, so record the run from the laptop instead of
+`screen`:
+
+```sh
+./flash.sh --wifi tuning    # flash it on the cable, then unplug
+mosquitto_sub -h 192.168.50.131 -t car/log | tee tuning_run.txt
+```
+
+- Start `mosquitto_sub` before switching the car on. Nothing waits for the
+  radio: lines printed before the car connects, or while the broker or
+  Wi-Fi is away, are held (up to 8 KB) and sent in order once it is back,
+  so an outage delays the log instead of cutting a hole in it. A line only
+  reaches subscribers listening when it is sent, so keep `mosquitto_sub`
+  running, or start it again, before the car reconnects.
+- The battery must be on before the cable comes out, or the board loses
+  power.
+- The console still gets every line. With the cable out, the Pico keeps
+  the first 4 KB and drops the rest; nothing blocks either way.
+- The recorded file is the same text as the console, so the tables the
+  benches print paste straight into the reports.
+
 | Bench | Hardware | Power | Status |
 |---|---|---|---|
 | `run_host_tests.sh` | none | none | passing |
 | car, nothing wired | Pico alone | USB | boots |
 | `motion` | motors on M1, M2, both encoders | battery | working |
 | `encoders` | both encoders, motors held off | battery | working |
-| `duty` | motors and encoders, on the floor | battery | not yet run; sets `MOTOR_MIN_DUTY` |
+| `duty` | motors and encoders, on the floor | battery | run 2026-09-26: `MOTOR_MIN_DUTY` 70 |
 | `tuning` | motors and encoders, then the floor | battery | not yet run |
 | `servo` | servo on S1 | battery | working |
 | `scanning` | servo on S1, HC-SR04 on Grove 4 | battery | working |
@@ -489,7 +512,7 @@ hit 0 | rate 0 dps | heading 187 | terrain STABLE rough 11
 |---|---|
 | `cal` | Calibrated at start-up |
 | `pitch`, `ok`, `mag` | Tilt; whether it can be believed; the filtered vector length in milli g |
-| `raw` | The largest unfiltered magnitude since the last line, the only column a knock shows in |
+| `jolt` | The largest jolt since the last line: how far a raw sample sat from the filtered vector, in any direction. The only column a knock shows in |
 | `hump`, `peak` | On a hump now; the run's highest hump in mm |
 | `event` | Motion class |
 | `hit` | Collision, latched and cleared when read, so it shows on one line only |
@@ -503,10 +526,10 @@ g, and `ok` shows 0.
 - **`ok 0` with the car standing still:** the mount passes too much
   vibration, or the band is too tight.
 
-**Collision.** Tap the bumper harder and harder and watch `raw`. Set
-`IMU_COLLISION_THRESHOLD_MILLI_G`, 600 above one g today, just above the
+**Collision.** Tap the bumper harder and harder and watch `jolt`. Set
+`IMU_COLLISION_THRESHOLD_MILLI_G`, 600 mg of jolt today, just above the
 hardest knock that should not count. `mag` cannot show a knock, because
-its filter takes 16 samples to respond. If `raw` barely rises when you
+its filter takes 32 samples to respond. If `jolt` barely rises when you
 knock the bumper hard, the mount is absorbing the impact.
 
 **Hump height.** It needs the car moving, because height is sin(pitch)
@@ -558,10 +581,10 @@ means nothing reaches the pin.
 - **The PID gains were set while the loops ran every 20 ms.** They now run
   every 10 ms, so re-tune them with `./flash.sh tuning` before trusting
   speed control; `motion/tuning_report.md` explains how.
-- **`MOTOR_MIN_DUTY` (150) is unmeasured and floors every nonzero duty.**
-  At 800 mm/s full duty, speeds under about 120 mm/s cannot be held, so
-  `CAR_BARCODE_SPEED_MM_PER_SEC` (100) runs at about 120, and so do the
-  on-the-spot turns. Measure it with `./flash.sh duty`.
+- **The left encoder is noisy at speed.** It threw away 54 impossible
+  edges on one step test against 1 on the right, and still shows speed
+  spikes. Its extra counts make the straight line correction slow the left
+  wheel, so the car curves left. Check its wiring (Pin map below).
 - **The IMU has no gyroscope.** See `imu_terrain/terrain_report.md`,
   section 6.
 
@@ -680,6 +703,64 @@ To check the line sensors, wheels off the ground:
    the barcode sensor never steers.
 5. Build the car, flash, and confirm `motion ready` and `line ready` at
    boot. The bring up order above takes over from here.
+
+## Resource use
+
+Measured with `arm-none-eabi-size` on the current build. The Pico W has
+2 MB of flash and 264 KB of RAM.
+
+| Image | Flash | Static RAM |
+|---|---|---|
+| Car, `./flash.sh` | 66 KB, 3 % | 17 KB, 6 % |
+| Car with Wi-Fi and MQTT, `./flash.sh --wifi` | 344 KB, 17 % | 65 KB, 25 % |
+| Our own code, `app_program/`, within those | 16 KB | 1.3 KB |
+
+Most of the Wi-Fi image is not ours: 225 KB of its flash is the radio
+chip's firmware, and about 25 KB of its RAM is lwIP's packet buffers. On
+top of the static RAM, the five car tasks take 4 KB of stack each, 20 KB
+in all, from the kernel's memory pool at start-up. How much of each stack
+is actually used has not been measured.
+
+**Processor**
+- One 10 ms kernel timer wakes the motion, line, IMU and mission tasks.
+  Between ticks every task sleeps: nothing polls or waits in a loop.
+- The only fast interrupt is the barcode sampler, every 500 us. It reads
+  one pin and records a timestamp only when the level changes, into a
+  32 entry ring; decoding runs later in the line task.
+- Each encoder pulse records one timestamp in its interrupt; speed and
+  distance are worked out in the motion task.
+- No floating point anywhere. The RP2040's cores have no floating point
+  unit, so it would run in software. Pitch and heading use an integer
+  arctangent approximation, and hump height the small angle sine.
+
+**Memory**
+- No heap. Every buffer is a fixed size set at compile time, so the car
+  cannot run out of memory mid-run.
+- The largest buffers of ours are the log held for an outage, 8 KB, and
+  the MQTT send ring, 8 messages of up to 480 bytes.
+
+**Radio**
+
+| Topic | Size | Rate | Data |
+|---|---|---|---|
+| `car/telemetry` | 297 bytes typical, 365 at most | every 200 ms | about 1.5 KB/s |
+| `car/terrain` | 124 bytes typical, 144 at most | every 2 s | under 0.1 KB/s |
+| `car/heartbeat` | about 45 bytes | every second | about 0.05 KB/s |
+| `car/log` | whole console lines, up to 480 bytes a message | as printed | a few lines a second at most |
+
+- Messages go at QoS 0 with no resends: a lost telemetry message is
+  replaced by the next one 200 ms later, so nothing out of date is sent
+  twice.
+- The control tasks never wait on the radio. A message is copied into
+  the send ring and the radio task sends it.
+- `CAR_TELEMETRY_PERIOD_MSEC` sets the largest share of the traffic.
+
+**Power**
+- A stopped motor gets no power at all.
+- The sonar pings at most once every `CAR_SONAR_CHECK_PERIOD_MSEC`
+  (60 ms) while following.
+- The servo sweeps while driving (`SCAN_SWEEP_WHILE_MOVING`), which costs
+  servo current; 0 keeps it still and looks straight ahead only.
 
 ## Kernel notes
 

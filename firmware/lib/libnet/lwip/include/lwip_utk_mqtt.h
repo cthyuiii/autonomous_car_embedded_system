@@ -25,8 +25,9 @@
 #define LWIP_UTK_MQTT_TOPIC_LEN     32u
 #define LWIP_UTK_MQTT_TX_PAYLOAD   480u   /* COMMS_PAYLOAD_MAX_BYTES */
 #define LWIP_UTK_MQTT_RX_PAYLOAD    64u
-#define LWIP_UTK_MQTT_TX_SLOTS       4u
+#define LWIP_UTK_MQTT_TX_SLOTS       8u   /* Room for a burst of log lines */
 #define LWIP_UTK_MQTT_RX_SLOTS       4u
+#define LWIP_UTK_MQTT_LOG_BYTES   8192u   /* Log held while offline, 2^n */
 
 /* lwip_utk_mqtt_publish() results. */
 #define LWIP_UTK_MQTT_QUEUED         0
@@ -43,6 +44,7 @@ typedef struct
     uint16_t port;
     char     client_id[LWIP_UTK_MQTT_ID_LEN];
     char     subscribe_topic[LWIP_UTK_MQTT_TOPIC_LEN];
+    char     log_topic[LWIP_UTK_MQTT_TOPIC_LEN];   /* "" for no log */
     uint16_t keepalive_seconds;
     uint32_t reconnect_ms;
 } lwip_utk_mqtt_config_t;
@@ -55,9 +57,11 @@ typedef struct
     bool     b_subscribed;
     int32_t  connect_result;
     uint32_t connect_attempts;
+    uint32_t sessions;              /* Connects the broker accepted */
     uint32_t published;
     uint32_t dropped;
     uint32_t received;
+    uint32_t log_lines_lost;        /* Log lines that found it full */
 } lwip_utk_mqtt_status_t;
 
 /**
@@ -84,6 +88,19 @@ void lwip_utk_mqtt_configure (lwip_utk_mqtt_config_t const * p_config);
  */
 int32_t lwip_utk_mqtt_publish (char const * p_topic, void const * p_payload,
                                uint16_t length);
+
+/**
+ * @brief Add text to the log stream. Any task.
+ *
+ * Unlike a publish, the text is kept while there is no connection and sent
+ * in order once there is one, several lines to a message, so an outage
+ * delays the log instead of cutting a hole in it. A line that does not fit
+ * in the LWIP_UTK_MQTT_LOG_BYTES held is lost whole, and counted.
+ *
+ * @param[in] p_text Text, usually one line ending in a newline.
+ * @param[in] length Bytes of p_text.
+ */
+void lwip_utk_mqtt_log (char const * p_text, uint16_t length);
 
 /**
  * @brief Pop one received publish, oldest first. Any task.

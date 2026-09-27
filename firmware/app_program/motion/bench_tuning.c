@@ -39,7 +39,7 @@
 #define BENCH_SETTLED_MSEC     1000u   /* Tail of a step counted as settled */
 #define BENCH_SPIN_DOWN_MSEC   1500u
 #define BENCH_FLOOR_MSEC      15000u   /* To put the car on the floor */
-#define BENCH_PLACE_MSEC       8000u   /* To measure and re-place it */
+#define BENCH_PLACE_MSEC      15000u   /* To measure and re-place it */
 #define BENCH_MOVE_LIMIT_MSEC 10000u   /* A move that runs longer failed */
 #define BENCH_COAST_MSEC        500u   /* The coast is part of the result */
 #define BENCH_STEPS               3u
@@ -76,6 +76,7 @@ static bool     run_move (uint32_t * p_left, uint32_t * p_right,
                           uint32_t * p_msec);
 static uint32_t pulses_to_milli_mm (uint32_t pulses);
 static void     idle (uint32_t msec);
+static void     print_noise (char const * p_when);
 
 INT usermain (void)
 {
@@ -108,18 +109,22 @@ INT usermain (void)
 
     CAR_LOG(CAR_LOG_INFO, "motion loop ran every %u ms; the PID and the "
             "stall timers count %u\n", period_msec, MOTION_TICK_PERIOD_MSEC);
+    print_noise("after the step test");
 
     CAR_LOG(CAR_LOG_INFO, "part 2, accuracy: put the car ON the floor, "
             "%u s\n", BENCH_FLOOR_MSEC / 1000u);
     idle(BENCH_FLOOR_MSEC);
     CAR_LOG(CAR_LOG_INFO, "| Run | Asked mm | Encoders mm "
-            "| Heading deg, + right | Time ms | Tape mm |\n");
-    CAR_LOG(CAR_LOG_INFO, "|---|---|---|---|---|---|\n");
+            "| Heading deg, + right | Time ms | Tape mm "
+            "| Sideways mm, + right |\n");
+    CAR_LOG(CAR_LOG_INFO, "|---|---|---|---|---|---|---|\n");
 
     for (index = 1u; index <= BENCH_RUNS; index++)
     {
         accuracy_drive(index);
     }
+
+    print_noise("after the drives");
 
     CAR_LOG(CAR_LOG_INFO, "| Run | Asked deg | Encoders deg | Time ms "
             "| Protractor deg |\n");
@@ -300,7 +305,7 @@ static void accuracy_drive (uint8_t run)
                             / ((int32_t)WHEEL_BASE_MM * 1000);
         int32_t magnitude = (heading < 0) ? -heading : heading;
 
-        CAR_LOG(CAR_LOG_INFO, "| drive %u | %u | %d | %c%d.%d | %u |  |\n",
+        CAR_LOG(CAR_LOG_INFO, "| drive %u | %u | %d | %c%d.%d | %u |  |  |\n",
                 run, BENCH_DISTANCE_MM, (left_mmm + right_mmm) / 2000,
                 (heading < 0) ? '-' : '+', magnitude / 10, magnitude % 10,
                 msec);
@@ -414,6 +419,28 @@ static void idle (uint32_t msec)
         (void)motion_tick();
         car_time_wait_tick();
     }
+}
+
+/**
+ * @brief Print how much encoder noise has been thrown away so far.
+ *
+ * NOTE: The step test and the drives only ever turn the wheels forward, so
+ * any reversal counted by then is noise on phase B, and any glitch is
+ * noise on phase A. Noise on one wheel makes its count run ahead, which
+ * the straight line correction answers by slowing that wheel: the car then
+ * curves toward it while the encoders say it went straight.
+ *
+ * @param[in] p_when Which point of the run this is.
+ */
+static void print_noise (char const * p_when)
+{
+    motion_state_t state = { 0 };
+
+    (void)motion_get_state(&state);
+    CAR_LOG(CAR_LOG_INFO, "encoder noise %s: left %u glitches %u reversals, "
+            "right %u glitches %u reversals\n", p_when, state.glitches_left,
+            state.reversals_left, state.glitches_right,
+            state.reversals_right);
 }
 
 /*** end of file ***/

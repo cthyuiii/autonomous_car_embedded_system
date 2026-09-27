@@ -43,7 +43,7 @@
  * that has to fit past, around or between something derives from these
  * two rather than carrying its own guess. */
 #define CAR_WIDTH_MM                 150u   // Across the front
-#define CAR_LENGTH_MM                200u   // Front bumper to the back
+#define CAR_LENGTH_MM                200u   // Bumper to back, measured
 
 /* Owner: Buddy 2, motion control. The values down to the next owner line. */
 /* Motor driver, on the board. Two PWM pins per motor, verified. PWM
@@ -54,7 +54,7 @@
 #define MOTOR_RIGHT_IN2_PIN           11u   // M2B, verified
 #define MOTOR_PWM_FREQ_HZ          10000u   // Board maker's, motors verified
 #define MOTOR_PWM_MAX_DUTY          1000u   // Duty is expressed per mille.
-#define MOTOR_MIN_DUTY               150u   // TODO: measure, ./flash.sh duty
+#define MOTOR_MIN_DUTY                70u   // ./flash.sh duty, 2026-09-26
 
 /* Wheel encoders, the Hall sensor built into each geared motor. Phase A
  * raises the interrupt and is counted; phase B is read at every A edge to
@@ -80,6 +80,14 @@
  * about 1.3 mm of travel. The right encoder showed single stray reversals
  * on 2026-09-25, each one a power surge from the speed loop. */
 #define ENCODER_DIRECTION_PULSES       4u
+/* The shortest gap a real pulse can follow the last one by: 0.29 mm at
+ * twice MOTION_MAX_SPEED_MM_PER_SEC is about 180 us, and a real pulse
+ * stays high for at least as long. An edge sooner than this, or one whose
+ * pin is already low again when the interrupt reads it, is electrical
+ * noise, usually from the motor wiring, and is not counted;
+ * motion_get_state() reports how many were thrown away. The left encoder
+ * threw away 54 on the 2026-09-26 step test against 1 on the right. */
+#define ENCODER_MIN_PULSE_USEC       150u
 #define ENCODER_STALL_TIMEOUT_MSEC   300u   // No pulse this long reads 0 mm/s
 /* A driven wheel silent this long is a fault and halts the car. It must
  * outlast the PID's climb to full duty on a stopped wheel, about a second
@@ -105,7 +113,7 @@
  * Slower turns overshoot less once the motors are cut and give the line
  * sensors longer over the line. MOTOR_MIN_DUTY is the floor under it, so
  * if turns stay too quick at a low value, that floor is what to lower. */
-#define MOTION_TURN_SPEED_MM_PER_SEC  100u   // TODO: tune on the floor
+#define MOTION_TURN_SPEED_MM_PER_SEC  60u   // 100 overshot 2.4 to 3.7 deg
 /* Straight line correction on distance moves, encoders only. The wheel
  * that has travelled further since the move began is slowed and the other
  * sped up by this many mm/s per mm between them, at most half the move
@@ -118,8 +126,10 @@
  * counted 10, halved now that they run every 10. TODO: measure it,
  * tuning_report.md section 2.
  *
- * NOTE: MOTOR_MIN_DUTY floors every nonzero duty, so speeds under about
- * 150/1000 * 800 = 120 mm/s cannot be held. */
+ * NOTE: MOTOR_MIN_DUTY floors every nonzero duty. At 70 the wheels hold
+ * about 20 mm/s on the floor, so every speed the car asks for is
+ * reachable. The same bench showed only about 35 mm/s at 100 per mille,
+ * far under this line's 80, so expect this value to come down. */
 #define MOTION_MAX_SPEED_MM_PER_SEC  800u   // TODO: measure at full duty
 #define MOTION_MAX_STEER_PERMILLE   2000    // Over 1000 reverses inner wheel
 
@@ -219,7 +229,7 @@
  * room for a real impact and costs a little pitch resolution. */
 #define IMU_ACCEL_FS_SELECT            2u   // 0 is 2 g, 2 is 8 g
 #define IMU_ACCEL_MG_PER_LSB           4u   // 1 << IMU_ACCEL_FS_SELECT
-#define IMU_COLLISION_THRESHOLD_MILLI_G  600u  // Over 1 g. Tune on peak
+#define IMU_COLLISION_THRESHOLD_MILLI_G  600u  // Jolt, any side. Tune on it
 #define IMU_ACCEL_EVENT_MILLI_G      250u   // TODO: tune, forward accel event
 #define IMU_TURN_EVENT_DPS            30u   // TODO: tune, turning event
 #define IMU_EVENT_HOLD_SAMPLES        20u   // Samples an event holds, 200 ms
@@ -228,7 +238,7 @@
  * 90 degrees, found 2026-09-25 when tilting it sideways read as a climb.
  * IMU_PITCH_SIGN then picks which end of that axis is the nose. */
 #define IMU_FORWARD_AXIS               1u
-#define IMU_PITCH_SIGN                 1    // TODO: lift the nose, flip if < 0
+#define IMU_PITCH_SIGN                 1    // Nose up reads positive, verified
 /* Terrain roughness is the smoothed distance of the gravity vector from
  * one g, so it is near zero on a smooth floor and climbs with every bump.
  * The shift is the filter weight, the threshold is where stable ends. */
@@ -252,8 +262,8 @@
 /* Scan servo on header S1. The header is powered from the board's motor
  * rail, so the servo needs the battery, not USB power alone. Pulse range
  * is the board maker's calibrated example; the end stops vary per servo.
- * Angle 90 is straight ahead; angles above 90 look to the car's left.
- * TODO: confirm the direction on the bench and swap the pulse ends if not. */
+ * Angle 90 is straight ahead; angles above 90 look to the car's left,
+ * verified on the bench. */
 #define SERVO_PIN                     12u   // S1, verified
 #define SERVO_PWM_FREQ_HZ             50u   // Verified example value
 /* Servo position is a pulse width, and the width below is the horn's
@@ -367,12 +377,13 @@
 #define COMMS_TOPIC_HEARTBEAT    "car/heartbeat"
 #define COMMS_TOPIC_COMMAND      "car/command"
 #define COMMS_TOPIC_TERRAIN      "car/terrain"
+#define COMMS_TOPIC_LOG          "car/log"          // Console mirror
 #define COMMS_WIFI_TIMEOUT_MSEC    30000u
 #define COMMS_MQTT_KEEPALIVE_SECONDS  60u
 #define COMMS_POLL_PERIOD_MSEC        10u
 #define COMMS_HEARTBEAT_PERIOD_MSEC 1000u
 #define COMMS_RECONNECT_BACKOFF_MSEC 5000u
-/* Telemetry is the longest payload: 268 bytes on a typical run and 336
+/* Telemetry is the longest payload: 297 bytes on a typical run and 365
  * with every field at its widest, measured on the host. The MQTT ring
  * slot, LWIP_UTK_MQTT_TX_PAYLOAD, must be at least this size, and comms.c
  * refuses to build if it is not: a slot smaller than the message drops

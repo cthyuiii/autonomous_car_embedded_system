@@ -95,10 +95,14 @@ match wins:
 A new event must outlast `IMU_EVENT_HOLD_SAMPLES` (20) samples, 200 ms,
 of the current one before it replaces it. An impact replaces anything at once.
 
-**Collision.** A single raw sample whose magnitude is more than
-`IMU_COLLISION_THRESHOLD_MILLI_G` (600 mg) above one g latches a collision.
-It uses the raw sample, not the filtered one, because an impact lasts a few
-milliseconds.
+**Collision.** The jolt is how far one raw sample sits from the filtered
+acceleration vector, in any direction. A single sample with a jolt over
+`IMU_COLLISION_THRESHOLD_MILLI_G` (600 mg) latches a collision. It uses
+the raw sample, not the filtered one, because an impact lasts a few
+milliseconds. It measures the difference as a vector, not the change in
+the vector's length, because a bumper knock is sideways to gravity: an
+800 mg knock from the side lengthens the vector by only about 280 mg, so
+a length test missed firm hits.
 
 **Turn rate.** This is the wheel speed difference divided by
 `WHEEL_BASE_MM`. The magnetometer is not used for it: the motors'
@@ -121,6 +125,7 @@ magnets pull the heading.
 | 2026-09-25 | Found in review: the IMU task ran every 20 ms, not 10, because a kernel delay adds a tick | Loops now woken every tick; `IMU_FILTER_SHIFT`, `IMU_ROUGHNESS_SHIFT` and `IMU_EVENT_HOLD_SAMPLES` doubled in samples so their time in ms is unchanged |
 | 2026-09-25 | Found in review: pitch frozen at the foot of a hump lost that part of the climb | Frozen stretches bridged between trusted samples; hump count and last hump kept |
 | 2026-09-25 | Found in review: a slope that changed while pitch was frozen was still miscounted | Trust band 450 mg while a hump is open, 300 on the flat |
+| 2026-09-27 | Firm hits on the bumper sometimes did not register | Collision judged on the jolt, the vector difference from the filtered vector, instead of the vector's length over one g, which barely moves for a knock from the side. The bench column `raw` became `jolt` |
 
 ## 4. Measurements
 
@@ -133,13 +138,15 @@ it back to 0 afterwards. Reset the board before every run.
 
 | Boot | `mag` (the module's one g) | `ok` | `rough` | Pitch |
 |---|---|---|---|---|
-| 1 | | | | |
+| 1 | 793 | 1 | 31 | 1 |
 | 2 | | | | |
 | 3 | | | | |
 | 4 | | | | |
 | 5 | | | | |
 
-Pass: `ok` 1, `rough` well below 120, and pitch 0 ± 1°.
+Pass: `ok` 1, `rough` well below 120, and pitch 0 ± 1°. Boot 1
+(2026-09-26) passes: the old `raw` column, the vector's length, peaked at
+817 to 833 against 793, about 40 mg of noise at rest.
 
 **b. Static tilt.** Put the car on a ramp or a stack of books and measure
 the angle with a protractor or phone level.
@@ -206,17 +213,17 @@ Target: within 5 mm. The last column matters most.
 | Tap the bumper | IMPACT | | |
 
 **f. Collision threshold.** Tap the bumper at a few strengths and read the
-`raw` column, which is the peak since the last line.
+`jolt` column, which is the peak since the last line.
 
-| Tap | `raw` peak mg | `hit` 1? |
+| Tap | `jolt` peak mg | `hit` 1? |
 |---|---|---|
 | Light touch | | |
 | Firm knock | | |
 | Push into a wall at driving speed | | |
 | Driving over the hump, no contact | | |
 
-The threshold (600 mg above one g) must sit above the hump row and below
-the knock rows. If the hump row triggers a hit, the car will stop on every
+The threshold (600 mg of jolt) must sit above the hump row and below the
+knock rows. If the hump row triggers a hit, the car will stop on every
 hump.
 
 ## 5. Results and conclusions

@@ -33,6 +33,7 @@ typedef struct {
     volatile int32_t link_status;
     volatile uint32_t link_up;
     volatile uint32_t join_elapsed_ms;
+    volatile uint32_t rejoin_count;   /* Joins retried after a loss */
     volatile int32_t link_rssi;
     uint8_t bssid[6];
     volatile uint32_t lwip_initialized;

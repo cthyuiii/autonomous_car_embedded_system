@@ -74,7 +74,7 @@
 #endif
 
 #if TM_WIFI_MQTT
-/* A telemetry message runs to about 340 bytes with its topic, which the
+/* A telemetry message runs to about 390 bytes with its topic, which the
  * default 256 byte output ring would refuse outright. A message that does
  * not fit behind the one before waits in lwip_utk_mqtt's own ring for the
  * next poll. */

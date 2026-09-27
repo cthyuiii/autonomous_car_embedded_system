@@ -97,16 +97,18 @@ width and carry a little real information. The 5 degree fine steps between
 them sit well inside one beam and mostly re-read the same echo, so bearing
 and width are indicative rather than measured.
 
-**Obstacle avoidance will still reverse, not go round.** Measuring the
-clearance beside an obstacle needs the horn to see past it. At the 200
-millimetre trigger distance, 10 degrees off centre reaches only about 35
-millimetres to the side, against the 150 millimetres of clearance the
-planner wants. So both clearances read zero, `scan_plan_avoidance()` picks
-`CAR_AVOID_REVERSE`, and after `SCAN_MAX_REVERSE_ATTEMPTS` the car halts.
-Seeing 150 millimetres sideways at 200 ahead needs about 37 degrees either
-side, which is past where the pulse clamps, so detours need both a wider
-mount and a higher `SERVO_PULSE_MAX_USEC`. Until then the car sees an
-obstacle, stops and backs off, which is the safe half of the behaviour.
+**The planner cannot see round an obstacle, so the car probes.**
+Measuring the clearance beside an obstacle needs the horn to see past it.
+At the 200 millimetre trigger distance, 10 degrees off centre reaches only
+about 35 millimetres to the side, against the 250 millimetres
+(`SCAN_CLEARANCE_MIN_MM`) the planner wants. So both clearances read zero
+and `scan_plan_avoidance()` picks `CAR_AVOID_REVERSE`. The car backs off
+`SCAN_REVERSE_MM` and drives the box detour on one side, pinging ahead
+before every driving leg. A blocked leg is undone and the other side tried,
+up to `CAR_MAX_DETOUR_ATTEMPTS`, after which the car halts. Seeing 250
+millimetres sideways at 200 ahead would need about 51 degrees either side,
+past where the pulse clamps, so it needs both a wider mount and a higher
+`SERVO_PULSE_MAX_USEC`.
 
 A ranging at the angle the servo already holds skips the settle, which is
 what makes the forward ping every 60 ms while following affordable. The

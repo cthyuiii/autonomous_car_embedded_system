@@ -129,20 +129,19 @@ bool imu_is_pitch_trusted (void);
 car_status_t imu_get_accel_magnitude (uint16_t * p_milli_g);
 
 /**
- * @brief Largest raw acceleration magnitude since the last call.
+ * @brief Largest jolt since the last call.
  *
- * imu_get_accel_magnitude() reports the filtered vector, which is what the
- * trust gate needs and which smooths a knock almost entirely away. The
- * collision test runs on the raw sample instead, so this is the number
- * IMU_COLLISION_THRESHOLD_MILLI_G is really compared against, and the only
- * one worth watching while tapping the bumper. Reading it clears the peak
- * back to one g.
+ * The jolt is how far one raw sample sits from the filtered acceleration
+ * vector, in any direction: near zero standing still or rolling smoothly,
+ * large for a knock from any side. It is the number
+ * IMU_COLLISION_THRESHOLD_MILLI_G is compared against, and the one to
+ * watch while tapping the bumper. Reading it clears it.
  *
- * @param[out] p_milli_g Peak raw magnitude, near one g if nothing happened.
+ * @param[out] p_milli_g Peak jolt, milli g.
  *
  * @return CAR_OK, or CAR_ERR_RANGE if p_milli_g is NULL.
  */
-car_status_t imu_get_peak_accel_magnitude (uint16_t * p_milli_g);
+car_status_t imu_get_peak_jolt (uint16_t * p_milli_g);
 
 /**
  * @brief Classify the current motion from the filtered acceleration.

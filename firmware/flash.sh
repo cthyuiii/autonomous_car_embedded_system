@@ -15,6 +15,8 @@
 #   ./flash.sh scanning     the scanning bench
 #   ./flash.sh comms        the comms bench, needs the radio profile below
 #   ./flash.sh --wifi       the car with the radio and MQTT
+#   ./flash.sh --wifi tuning  any bench with the radio: its console also
+#                           goes to car/log, to run it off the cable
 #   ./flash.sh --build-only motion   build it, do not flash
 #
 # The first flash of a blank Pico needs the BOOTSEL button: hold it while

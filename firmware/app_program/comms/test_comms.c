@@ -66,6 +66,8 @@ int main (void)
     telemetry.accel_milli_g                = 65535u;
     telemetry.hump_count                   = 65535u;
     telemetry.last_hump_height_mm          = 65535u;
+    telemetry.last_barcode                 = 'D';
+    telemetry.barcode_count                = 65535u;
     telemetry.encoder_count_left           = 4294967295u;
     telemetry.encoder_count_right          = 4294967295u;
     telemetry.total_distance_mm            = 4294967295u;

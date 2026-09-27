@@ -36,7 +36,7 @@ drives 500 mm within 5 percent three runs in a row on the floor.
 | ENCODER_*_B_FORWARD    | left 0, right 1 | `./flash.sh encoders`: a wheel reading `back` while turned forward gets flipped |
 | WHEEL_CIRCUMFERENCE_MM | 188   | 500 mm floor drive matched the tape |
 | WHEEL_BASE_MM          | 110   | tyre centres; confirm with the turn test in `tuning_report.md` |
-| MOTOR_MIN_DUTY         |       | `./flash.sh duty` on the floor: the higher wheel's "keeps turning down to" |
+| MOTOR_MIN_DUTY         | 70    | `./flash.sh duty` on the floor: the higher wheel's "keeps turning down to" |
 | MOTION_MAX_SPEED       |       | steady error in the step test, `tuning_report.md` section 2 |
 | KP / KI / KD in milli  |       | step response, `tuning_report.md` section 2 |
 | MOTION_STRAIGHT_KP     |       | 500 mm drive, sideways drift at the end |
@@ -46,8 +46,8 @@ and turns, and prints table rows for `tuning_report.md`, the PID tuning
 report and motion accuracy evaluation the write-up asks for.
 
 `MOTOR_MIN_DUTY` floors every nonzero duty, so it sets the slowest speed
-the car can hold: at 150 per mille and 800 mm/s at full duty that is about
-120 mm/s. `./flash.sh duty` ramps the raw duty up and back down on the
+the car can hold: 70 per mille, measured 2026-09-26, holds about 20 mm/s.
+`./flash.sh duty` ramps the raw duty up and back down on the
 floor and prints where each wheel starts and where it stops. Set the floor
 to the higher stop value: the speed loop pushes past it to start a wheel
 from rest.

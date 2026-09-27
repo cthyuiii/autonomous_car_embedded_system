@@ -29,6 +29,8 @@ Telemetry on `car/telemetry`, one JSON object every 200 ms:
 | encl, encr    | encoder counts since boot                            |
 | mask          | line sensor bits, 1 left, 2 barcode, 4 right         |
 | nav           | last car_nav_command_t decoded or received           |
+| barcode       | last barcode letter read, "" before the first        |
+| barcodes      | barcodes read since boot, any letter                 |
 | hump          | peak hump height this run, mm                        |
 | dist          | ground distance since boot, mm                       |
 | obst.valid    | 1 if the last scan found something                   |
@@ -42,7 +44,7 @@ Telemetry on `car/telemetry`, one JSON object every 200 ms:
 |------------------------|----------------------------------------------|
 | starting               | before the first state                       |
 | following line         | on the line                                  |
-| turning onto line      | hard turn back onto the line after leaving it|
+| turning onto line      | crossing, creeping and turning back onto it  |
 | line lost              | neither line sensor has seen the line lately |
 | reading barcode        | taking a decoded command                     |
 | stopped at junction    | waiting for a command at a cross             |
@@ -71,10 +73,42 @@ Terrain status on `car/terrain` every 2 s (`CAR_TERRAIN_PERIOD_MSEC`), for
 | last_mm | height of the most recent hump                            |
 | peak_mm | height of the highest hump this run                       |
 
-Heartbeat on `car/heartbeat` every second: `{"uptime_ms":N,"connected":1}`.
+Heartbeat on `car/heartbeat` every second:
+`{"uptime_ms":N,"connected":1,"sessions":N}`. `sessions` counts the
+connections the broker has accepted, so anything above 1 means the car
+lost the link and got it back.
+
+Console mirror on `car/log`, radio builds only: every line the car or a
+bench prints, as plain text, several whole lines to a message. Lines are
+held while the car is offline and sent in order when it reconnects, up to
+`LWIP_UTK_MQTT_LOG_BYTES` (8 KB). See `common/car_log.c`.
+
+## Connection recovery
+
+- **Broker lost** (stopped or unreachable): the MQTT session drops and the
+  car tries again every `COMMS_RECONNECT_BACKOFF_MSEC` (5 s) until the
+  broker answers.
+- **Wi-Fi lost:** the radio service joins again 5 s after the link drops
+  and keeps trying, each attempt timing out after 30 s. lwIP renews the
+  address when the link returns, then MQTT reconnects as above.
+- **While disconnected** nothing is queued for later: telemetry is live
+  data, so the first message after reconnecting is current. The car keeps
+  driving throughout, because comms has its own task.
+
+The console prints `mqtt disconnected, session N` and `mqtt connected,
+session N` at each change. To test it with the car or `./flash.sh --wifi
+comms` running and `mosquitto_sub -h <broker ip> -t 'car/#' -v` open:
+
+1. Stop the broker for 1 minute (`brew services stop mosquitto`, then
+   `start`). Heartbeats stop, then resume with `sessions` 2.
+2. Turn the access point or hotspot off for 30 s, then on. Heartbeats
+   resume with `sessions` 3.
+
+Time both from switching back on to the first heartbeat, into the table
+below.
 
 | Measurement                    | Value | Notes                        |
 |--------------------------------|-------|------------------------------|
 | Time to first MQTT connect     |       | from power on, seconds       |
 | Reconnect time after drop      |       | pull the broker, time it     |
-| Telemetry size per message     |       | 268 bytes typical on the host, 336 at most |
+| Telemetry size per message     |       | 297 bytes typical on the host, 365 at most |

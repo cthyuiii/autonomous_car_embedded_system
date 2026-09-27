@@ -128,26 +128,46 @@ int main (void)
 }
 
 /**
- * @brief A hard knock latches once and clears on read, and the peak keeps
- *        the raw knock the filtered magnitude smoothed away, which is what
- *        the collision threshold is tuned against.
+ * @brief A knock latches once and clears on read, from above or from the
+ *        side, and the peak jolt is what the threshold is tuned against.
  */
 static void test_knock (void)
 {
-    uint16_t milli_g          = 0u;
-    uint16_t filtered_milli_g = 0u;
+    uint16_t jolt_mg = 0u;
 
+    /* Level and still: once settled, no jolt. */
+    imu_host_inject(0, 0, 1000, 300, 0, 0);
+    settle();
+    assert(CAR_OK == imu_get_peak_jolt(&jolt_mg));
+    assert(CAR_OK == imu_update());
+    assert(CAR_OK == imu_get_peak_jolt(&jolt_mg));
+    assert(jolt_mg < 50u);
+    assert(false == imu_is_collision_detected());
+
+    /* A knock from above. */
     imu_host_inject(0, 0, 3500, 300, 0, 0);
     assert(CAR_OK == imu_update());
     assert(true == imu_is_collision_detected());
     assert(false == imu_is_collision_detected());
+    assert(CAR_OK == imu_get_peak_jolt(&jolt_mg));
+    assert(jolt_mg >= 2400u);
+    assert(CAR_OK == imu_get_peak_jolt(&jolt_mg));
+    assert(0u == jolt_mg);
 
-    assert(CAR_OK == imu_get_peak_accel_magnitude(&milli_g));
-    assert(milli_g >= 3400u);
-    assert(CAR_OK == imu_get_accel_magnitude(&filtered_milli_g));
-    assert(filtered_milli_g < milli_g);
-    assert(CAR_OK == imu_get_peak_accel_magnitude(&milli_g));
-    assert(milli_g <= 1000u);
+    /* An 800 mg knock from the side lengthens the vector by only about
+     * 280 mg, which the old length test missed; the jolt is the full 800. */
+    imu_host_inject(0, 0, 1000, 300, 0, 0);
+    settle();
+    (void)imu_is_collision_detected();
+    assert(CAR_OK == imu_get_peak_jolt(&jolt_mg));
+    imu_host_inject(800, 0, 1000, 300, 0, 0);
+    assert(CAR_OK == imu_update());
+    assert(true == imu_is_collision_detected());
+    assert(CAR_OK == imu_get_peak_jolt(&jolt_mg));
+    assert(jolt_mg >= 750u);
+
+    imu_host_inject(0, 0, 1000, 300, 0, 0);
+    settle();
 }
 
 /**

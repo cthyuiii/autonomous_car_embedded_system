@@ -33,6 +33,7 @@
 #endif
 
 #include "car_config.h"
+#include "car_log.h"
 
 #ifndef COMMS_HAS_RADIO
 #define COMMS_HAS_RADIO 0
@@ -60,6 +61,7 @@ static char const * const g_event_names[CAR_MOTION_IMPACT + 1u] =
 
 static comms_command_handler_t gp_command_handler  = NULL;
 static bool                    gb_connected        = false;
+static uint32_t                g_sessions          = 0u;   // MQTT connects
 static char                    g_payload[COMMS_PAYLOAD_MAX_BYTES];
 #ifdef CAR_HOST_TEST
 static uint16_t                g_host_length       = 0u;
@@ -96,11 +98,21 @@ car_status_t comms_init (void)
             .port              = COMMS_MQTT_BROKER_PORT,
             .client_id         = COMMS_MQTT_CLIENT_ID,
             .subscribe_topic   = COMMS_TOPIC_COMMAND,
+            .log_topic         = COMMS_TOPIC_LOG,
             .keepalive_seconds = COMMS_MQTT_KEEPALIVE_SECONDS,
             .reconnect_ms      = COMMS_RECONNECT_BACKOFF_MSEC,
         };
+        lwip_utk_mqtt_status_t now = { 0 };
 
-        lwip_utk_mqtt_configure(&config);
+        /* The log mirror may have started it already, and configuring it
+         * again would drop a session in progress. */
+        lwip_utk_mqtt_get_status(&now);
+
+        if (!now.b_configured)
+        {
+            lwip_utk_mqtt_configure(&config);
+        }
+
         status = CAR_OK;
     }
 #endif
@@ -114,6 +126,7 @@ car_status_t comms_poll (void)
     /* The host has a broker that is always there, and delivers whatever
      * the test injected. */
     gb_connected = true;
+    g_sessions   = 1u;
 
     if (0u != g_host_length)
     {
@@ -133,7 +146,17 @@ car_status_t comms_poll (void)
         uint16_t               length = 0u;
 
         lwip_utk_mqtt_get_status(&status);
+
+        if (status.b_connected != gb_connected)
+        {
+            /* A session count above 1 means the link came back. */
+            CAR_LOG(CAR_LOG_INFO, "mqtt %s, session %u\n",
+                    status.b_connected ? "connected" : "disconnected",
+                    status.sessions);
+        }
+
         gb_connected = status.b_connected;
+        g_sessions   = status.sessions;
 
         /* Casts: both buffers are under 65536 bytes. */
         while (0 != lwip_utk_mqtt_receive(topic, (uint16_t)sizeof(topic),
@@ -307,11 +330,15 @@ static car_nav_command_t parse_command (char const * p_text, uint16_t length)
  */
 static uint16_t format_telemetry (car_telemetry_t const * p_telemetry)
 {
+    /* The last barcode as a one letter string, empty before the first. */
+    char const barcode[2] = { p_telemetry->last_barcode, '\0' };
+
     /* Casts: each value becomes the 32 bit type its %u or %d reads, which
      * holds every value of the narrower field it comes from. */
     int32_t written = COMMS_FORMAT(
         "{\"state\":%u,\"action\":\"%s\",\"speed\":%u,\"encl\":%u,"
-        "\"encr\":%u,\"mask\":%u,\"nav\":%u,\"hump\":%u,\"dist\":%u,"
+        "\"encr\":%u,\"mask\":%u,\"nav\":%u,\"barcode\":\"%s\","
+        "\"barcodes\":%u,\"hump\":%u,\"dist\":%u,"
         "\"obst\":{\"valid\":%u,"
         "\"bearing\":%d,\"range\":%u,\"width\":%u,\"left\":%u,"
         "\"right\":%u},\"imu\":{\"pitch\":%d,\"ok\":%u,\"head\":%d,"
@@ -324,6 +351,8 @@ static uint16_t format_telemetry (car_telemetry_t const * p_telemetry)
         (uint32_t)p_telemetry->encoder_count_right,
         (uint32_t)p_telemetry->line_sensor_mask,
         (uint32_t)p_telemetry->last_nav_command,
+        barcode,
+        (uint32_t)p_telemetry->barcode_count,
         (uint32_t)p_telemetry->peak_hump_height_mm,
         (uint32_t)p_telemetry->total_distance_mm,
         (uint32_t)p_telemetry->last_obstacle.b_is_valid,
@@ -351,10 +380,10 @@ static uint16_t format_telemetry (car_telemetry_t const * p_telemetry)
  */
 static uint16_t format_heartbeat (void)
 {
-    /* Casts: to the 32 bit type %u reads; both values fit it. */
-    int32_t written = COMMS_FORMAT("{\"uptime_ms\":%u,\"connected\":%u}",
-                                   (uint32_t)uptime_msec(),
-                                   (uint32_t)gb_connected);
+    /* Casts: to the 32 bit type %u reads; the values fit it. */
+    int32_t written = COMMS_FORMAT(
+        "{\"uptime_ms\":%u,\"connected\":%u,\"sessions\":%u}",
+        (uint32_t)uptime_msec(), (uint32_t)gb_connected, g_sessions);
 
     return fitted(written);
 }

@@ -1712,6 +1712,8 @@ static void publish_telemetry (void)
     if (E_OK == tk_loc_mtx(gh_telemetry_mutex, TMO_FEVR))
     {
         (void)line_get_sensor_mask(&g_telemetry.line_sensor_mask);
+        (void)line_get_last_barcode(&g_telemetry.last_barcode,
+                                    &g_telemetry.barcode_count);
 
         g_telemetry.mission_state       = g_state;
         g_telemetry.speed_mm_per_sec    = motion.speed_mm_per_sec;

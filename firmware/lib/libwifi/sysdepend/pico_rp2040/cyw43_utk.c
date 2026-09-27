@@ -43,6 +43,9 @@
  * budget returns the last copy and is visible through status_retries. */
 #define CYW43_STATUS_READ_ATTEMPTS 16
 #define CYW43_JOIN_TIMEOUT_US 30000000ULL
+/* Connection recovery: how long after a join started before a failed join,
+ * or a link lost after a good one, is tried again. */
+#define CYW43_REJOIN_INTERVAL_US 5000000ULL
 #define CYW43_DHCP_TIMEOUT_US 30000000ULL
 #define CYW43_DNS_TIMEOUT_US  30000000ULL
 
@@ -436,6 +439,31 @@ void cyw43_utk_link_state_changed(int up)
     mp_memory_barrir();
 }
 
+#if TM_WIFI_JOIN
+/* Start a station join with the credentials from config/wifi_credentials.h.
+ * Called with the cyw43 thread entered. */
+static void start_join(uint64_t *started_us)
+{
+    int32_t result;
+
+    radio_status.join_started = 1;
+    radio_status.join_complete = 0;
+    radio_status.link_up = 0;
+    radio_status.link_status = CYW43_LINK_DOWN;
+    *started_us = time_us_64();
+    result = cyw43_wifi_join(&cyw43_state,
+                             sizeof(wifi_ssid) - 1, wifi_ssid,
+                             sizeof(wifi_password) - 1, wifi_password,
+                             UTK_WIFI_AUTH, NULL,
+                             CYW43_CHANNEL_NONE);
+    radio_status.join_request_result = result;
+    if(result != 0) {
+        radio_status.join_result = result;
+        radio_status.join_complete = 1;
+    }
+}
+#endif
+
 static int scan_result(void *env, const cyw43_ev_scan_result_t *result)
 {
     T_CYW43_UTK_STATUS *status = env;
@@ -562,21 +590,7 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
             mp_memory_barrir();
             radio_status.scan_complete = 1;
 #if TM_WIFI_JOIN
-            radio_status.join_started = 1;
-            radio_status.join_complete = 0;
-            radio_status.link_up = 0;
-            radio_status.link_status = CYW43_LINK_DOWN;
-            join_started_us = time_us_64();
-            result = cyw43_wifi_join(&cyw43_state,
-                                     sizeof(wifi_ssid) - 1, wifi_ssid,
-                                     sizeof(wifi_password) - 1, wifi_password,
-                                     UTK_WIFI_AUTH, NULL,
-                                     CYW43_CHANNEL_NONE);
-            radio_status.join_request_result = result;
-            if(result != 0) {
-                radio_status.join_result = result;
-                radio_status.join_complete = 1;
-            }
+            start_join(&join_started_us);
 #endif
         }
 #if TM_WIFI_JOIN
@@ -605,6 +619,15 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
                 mp_memory_barrir();
                 radio_status.join_complete = 1;
             }
+        }
+        /* Connection recovery. The chip does not rejoin on its own, so a
+         * join that failed, or an access point lost after a good one, is
+         * joined again. lwIP renews the DHCP lease when the link returns,
+         * and the MQTT phase reconnects once the address is back. */
+        if(radio_status.join_complete && !radio_status.link_up
+           && time_us_64() - join_started_us >= CYW43_REJOIN_INTERVAL_US) {
+            radio_status.rejoin_count++;
+            start_join(&join_started_us);
         }
 #endif
         status_publish_end();

@@ -35,6 +35,7 @@ static uint16_t const g_test_symbol[TEST_CHARACTERS] =
     0x094u, 0x109u, 0x094u
 };
 
+static uint32_t          test_barcode (void);
 static void              build_symbol (uint32_t * p_widths);
 static car_nav_command_t cross_symbol (uint32_t const * p_widths,
                                        uint32_t * p_now_usec);
@@ -45,10 +46,7 @@ int main (void)
     uint8_t           mask    = 0u;
     car_nav_command_t command = CAR_NAV_NONE;
     uint8_t           health  = 0u;
-    uint32_t          widths[TEST_ELEMENTS];
     uint32_t          now     = 0u;
-    uint8_t           low     = 0u;
-    uint8_t           high    = TEST_ELEMENTS - 1u;
     uint8_t           index   = 0u;
 
     assert(CAR_OK == line_init());
@@ -109,6 +107,39 @@ int main (void)
     assert(CAR_OK == line_get_position(&error));
     assert(true == line_is_at_junction());
 
+    now = test_barcode();
+
+    /* The start-up check names a sensor that reads dark where it should
+     * see floor, and passes once they all see floor. */
+    line_host_inject(0x04u, now);
+    assert(CAR_ERR_RANGE == line_calibrate());
+    assert(CAR_OK == line_get_sensor_mask(&mask));
+    assert(0x04u == mask);
+    line_host_inject(0x00u, now);
+    assert(CAR_OK == line_calibrate());
+
+    return 0;
+}
+
+/**
+ * @brief A symbol decodes from either end, and each read is counted.
+ *
+ * @return The injected clock after the crossings, microseconds.
+ */
+static uint32_t test_barcode (void)
+{
+    uint32_t widths[TEST_ELEMENTS];
+    uint32_t now    = 0u;
+    uint8_t  low    = 0u;
+    uint8_t  high   = TEST_ELEMENTS - 1u;
+    char     symbol = 'x';
+    uint16_t count  = 99u;
+
+    /* Nothing read yet. */
+    assert(CAR_OK == line_get_last_barcode(&symbol, &count));
+    assert(('\0' == symbol) && (0u == count));
+    assert(CAR_ERR_RANGE == line_get_last_barcode(NULL, &count));
+
     /* Forward crossing of *A* decodes to a left turn. */
     build_symbol(widths);
     assert(CAR_NAV_LEFT == cross_symbol(widths, &now));
@@ -126,16 +157,11 @@ int main (void)
 
     assert(CAR_NAV_LEFT == cross_symbol(widths, &now));
 
-    /* The start-up check names a sensor that reads dark where it should
-     * see floor, and passes once they all see floor. */
-    line_host_inject(0x04u, now);
-    assert(CAR_ERR_RANGE == line_calibrate());
-    assert(CAR_OK == line_get_sensor_mask(&mask));
-    assert(0x04u == mask);
-    line_host_inject(0x00u, now);
-    assert(CAR_OK == line_calibrate());
+    /* Both crossings are counted, and telemetry sees the letter. */
+    assert(CAR_OK == line_get_last_barcode(&symbol, &count));
+    assert((BARCODE_CHAR_LEFT == symbol) && (2u == count));
 
-    return 0;
+    return now;
 }
 
 /**
