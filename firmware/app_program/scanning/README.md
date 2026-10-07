@@ -62,12 +62,11 @@ refitted, because the splines index only every few degrees and it will not
 go back in the same place.
 
 One thing to know before widening further. A 1744 microsecond centre sits
-off to one side of the 1000 to 2000 band, leaving 146 microseconds above
-and 634 below. At 11 microseconds per degree that is 23 degrees up against
-57 down, so the upper end clamps first. Anything past 23 degrees either
-side means raising `SERVO_PULSE_MAX_USEC` towards 2100 or 2200, which most
-servos accept, or refitting the horn a spline or two over so the centre
-lands nearer 1500.
+off to one side of the pulse band, so the upper end clamps first.
+`SERVO_PULSE_MAX_USEC` is raised to 2100, which leaves 356 microseconds
+above the centre: 32 degrees at 11 microseconds per degree. Wider than that
+means raising it again, which most servos accept, or refitting the horn a
+spline or two over so the centre lands nearer 1500.
 
 ## Sweep width, and what it costs
 
@@ -76,39 +75,34 @@ the horn travels. Everything else follows it: the band `scan_measure()`
 clamps to, the coarse angle set, the fine scan step and span, and the servo
 bench. Change it alone and nothing needs keeping in step by hand.
 
-It ships at 10, so the horn swings 10 degrees either side of straight
-ahead, a 20 degree sweep, as much as this mount allows.
+It is set to 25, so the horn swings 25 degrees either side of straight
+ahead, a 50 degree sweep.
 
 | | Angle | Pulse |
 |---|---|---|
-| Right of centre | 80 | 1634 us |
+| Right of centre | 65 | 1469 us |
 | Straight ahead | 90 | 1744 us |
-| Left of centre | 100 | 1854 us |
+| Left of centre | 115 | 2019 us |
 
-A fine scan steps 5 degrees, half the sweep, so it reads at 80, 85, 90, 95
-and 100. That is five rangings at the datasheet's 60 millisecond minimum,
-so 300 milliseconds standing still, plus servo settle per move.
+A fine scan steps 12 degrees, half the sweep, across 25 degrees either
+side of the coarse bearing, so it takes five readings within 65 to 115.
+That is five rangings at the datasheet's 60 millisecond minimum, so 300
+milliseconds standing still, plus `SERVO_SETTLE_MSEC` per move.
 
-Two consequences, both smaller with a wider sweep:
+**Neighbouring readings.** The sonar's beam is about 15 degrees across.
+The three coarse angles, 25 degrees apart, clear one beam width, so the
+side readings are independent of the centre one. The 12 degree fine steps
+overlap a little, so bearing and width are indicative rather than
+measured.
 
-**Neighbouring readings are not independent.** The sonar's beam is about
-15 degrees across. The two extremes, 20 degrees apart, just clear one beam
-width and carry a little real information. The 5 degree fine steps between
-them sit well inside one beam and mostly re-read the same echo, so bearing
-and width are indicative rather than measured.
-
-**The planner cannot see round an obstacle, so the car probes.**
-Measuring the clearance beside an obstacle needs the horn to see past it.
-At the 200 millimetre trigger distance, 10 degrees off centre reaches only
-about 35 millimetres to the side, against the 250 millimetres
-(`SCAN_CLEARANCE_MIN_MM`) the planner wants. So both clearances read zero
-and `scan_plan_avoidance()` picks `CAR_AVOID_REVERSE`. The car backs off
+**Choosing a side.** Each side's clearance is the shortest reading on
+that side of the obstacle, measured along the ray. `scan_plan_avoidance()`
+goes round on the side whose clearance reaches `SCAN_CLEARANCE_MIN_MM`
+(250 mm, the car plus 50 mm each side), the larger one if both do. If
+neither does, it picks `CAR_AVOID_REVERSE`: the car backs off
 `SCAN_REVERSE_MM` and drives the box detour on one side, pinging ahead
 before every driving leg. A blocked leg is undone and the other side tried,
-up to `CAR_MAX_DETOUR_ATTEMPTS`, after which the car halts. Seeing 250
-millimetres sideways at 200 ahead would need about 51 degrees either side,
-past where the pulse clamps, so it needs both a wider mount and a higher
-`SERVO_PULSE_MAX_USEC`.
+up to `CAR_MAX_DETOUR_ATTEMPTS`, after which the car halts.
 
 A ranging at the angle the servo already holds skips the settle, which is
 what makes the forward ping every 60 ms while following affordable. The
@@ -148,10 +142,10 @@ somewhere the centre reading does not. That is what makes
 `clearance_left_mm` and `clearance_right_mm` mean anything, and therefore
 what lets `scan_plan_avoidance()` pick a side instead of always reversing.
 
-`SCAN_FINE_STEP_DEG` is the whole half sweep rather than half of it, so a
-fine scan lands on exactly those three angles. Finer steps cost 60 ms each
-to re-measure the same beam, and that time is spent standing still in front
-of an obstacle.
+`SCAN_FINE_STEP_DEG` is half the half sweep, 12 degrees, so a fine scan
+puts one reading between each pair of coarse angles. Finer steps cost
+60 ms each to re-measure the same beam, and that time is spent standing
+still in front of an obstacle.
 
 Test it with `./flash.sh detour`, which drives straight and detours with no
 line sensors involved.
