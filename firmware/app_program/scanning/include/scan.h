@@ -58,6 +58,7 @@
 #include "car.h"
 
 #define SCAN_DETOUR_LEGS    7u   /* Legs in the box detour */
+#define SCAN_DETOUR_ALONG_LEG 3u /* The one that walks the obstacle */
 
 /**
  * @brief Configure the servo PWM and the sonar trigger and echo pins.
@@ -181,9 +182,10 @@ car_status_t scan_recover_get_step (car_avoid_action_t * p_action,
  * sin 45.
  *
  * NOTE: Nothing measures how deep an obstacle is from the front, only how
- * wide it looks. Depth is therefore the width plus the car's length plus
- * the margin, a guess that holds for boxes and fails for walls. Pinging
- * before each drive leg is what catches the failure.
+ * wide it looks. The drive past leg is therefore walked, not driven: see
+ * scan_detour_beside(). Its planned length, the width plus the car's
+ * length plus the margin, only stands in until the walk records the real
+ * one with scan_detour_set_along().
  *
  * @param[in] p_profile Result of the fine scan. NULL or a zero width keeps
  *                      the fixed SCAN_DETOUR_SIDE_MM and
@@ -210,6 +212,32 @@ car_status_t scan_detour_plan (car_obstacle_profile_t const * p_profile);
 car_status_t scan_detour_get_leg (uint8_t index, car_avoid_action_t side,
                                   bool b_undo, car_avoid_action_t * p_action,
                                   uint16_t * p_amount);
+
+/**
+ * @brief While walking the obstacle's length: whether it is still beside
+ *        the car.
+ *
+ * Call with the car turned SCAN_DETOUR_LOOK_DEG toward the obstacle. The
+ * sonar is pointed to its limit on that side, square on to the obstacle's
+ * side, and anything nearer than the line the car left counts.
+ *
+ * @param[in]  side     The way round, CAR_AVOID_LEFT or CAR_AVOID_RIGHT.
+ * @param[out] p_beside true while the obstacle is still there. A failed
+ *                      ranging also reads true, so the walk carries on.
+ *
+ * @return CAR_OK, or CAR_ERR_RANGE for a bad side or a NULL pointer.
+ */
+car_status_t scan_detour_beside (car_avoid_action_t side, bool * p_beside);
+
+/**
+ * @brief Record how far the walk along the obstacle really went, so that
+ *        undoing the detour backs up that far.
+ *
+ * @param[in] along_mm Distance driven on SCAN_DETOUR_ALONG_LEG.
+ *
+ * @return CAR_OK.
+ */
+car_status_t scan_detour_set_along (uint16_t along_mm);
 
 #ifdef CAR_HOST_TEST
 /**

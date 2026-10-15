@@ -16,12 +16,13 @@
 #   ./flash.sh comms        the comms bench, needs the radio profile below
 #   ./flash.sh --wifi       the car with the radio and MQTT
 #   ./flash.sh --wifi tuning  any bench with the radio: its console also
-#                           goes to car/log, to run it off the cable
+#                           goes to car/log, to run it off the cable, and
+#                           it waits for the broker before it starts
 #   ./flash.sh --build-only motion   build it, do not flash
 #
-# The first flash of a blank Pico needs the BOOTSEL button: hold it while
-# plugging in the USB cable, then run this. Afterwards picotool reboots the
-# board itself and the button is never needed again.
+# Every flash needs the BOOTSEL button: hold it while plugging in the USB
+# cable, then run this. The firmware's USB offers only the console, not the
+# reset interface picotool would need to reboot a running board.
 
 set -u
 cd "$(dirname "$0")/build_make" || exit 1
@@ -88,12 +89,11 @@ if [ ! -f "$IMAGE" ]; then
 fi
 
 echo "flashing $IMAGE"
-# -f reboots a running board into BOOTSEL, -x runs the program afterwards.
+# -x runs the program once it is loaded.
 if ! picotool load -f -x "$IMAGE"; then
     echo >&2
-    echo "picotool could not reach a board." >&2
-    echo "If this Pico has never been flashed, hold BOOTSEL while plugging" >&2
-    echo "in the USB cable, then run this again." >&2
+    echo "picotool could not reach a board. Quit screen if it is open," >&2
+    echo "hold BOOTSEL while plugging in the USB cable, then run this again." >&2
     exit 1
 fi
 

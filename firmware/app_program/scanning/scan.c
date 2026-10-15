@@ -65,6 +65,8 @@ static detour_leg_t g_detour[SCAN_DETOUR_LEGS] =
     { true,  true,  SCAN_DETOUR_TURN_DEG },
 };
 
+/* How far out from the line the sideways leg puts the car, set with it. */
+static uint16_t           g_detour_clear_mm = SCAN_DETOUR_MARGIN_MM;
 static uint16_t           g_last_angle_deg  = SCAN_ANGLE_UNKNOWN;
 static uint32_t           g_last_ping_usec  = 0u;
 static bool               gb_search_left     = true;
@@ -427,9 +429,13 @@ car_status_t scan_detour_plan (car_obstacle_profile_t const * p_profile)
 
     if ((NULL != p_profile) && (0u != p_profile->width_mm))
     {
-        /* Cast: widening a uint16_t. */
-        uint32_t clear = ((uint32_t)p_profile->width_mm / 2u)
-                         + SCAN_DETOUR_MARGIN_MM;
+        /* Cast: widening a uint16_t. A flat face reads narrower than it
+         * is, so never plan for less than SCAN_DETOUR_WIDTH_MIN_MM. */
+        uint32_t width = ((uint32_t)p_profile->width_mm
+                          < SCAN_DETOUR_WIDTH_MIN_MM)
+                         ? SCAN_DETOUR_WIDTH_MIN_MM
+                         : (uint32_t)p_profile->width_mm;
+        uint32_t clear = (width / 2u) + SCAN_DETOUR_MARGIN_MM;
 
         side_mm  = clamp_mm((clear * SCAN_DETOUR_SIN45_RECIP) / 1000u,
                             SCAN_DETOUR_SIDE_MIN_MM,
@@ -438,8 +444,7 @@ car_status_t scan_detour_plan (car_obstacle_profile_t const * p_profile)
          * back an obstacle goes. CAR_LENGTH_MM is on top of it: the back
          * of the car is still beside the obstacle when the bumper is past
          * it, and turning in there clips it. */
-        depth_mm = clamp_mm((uint32_t)p_profile->width_mm + CAR_LENGTH_MM
-                            + SCAN_DETOUR_MARGIN_MM,
+        depth_mm = clamp_mm(width + CAR_LENGTH_MM + SCAN_DETOUR_MARGIN_MM,
                             SCAN_DETOUR_DEPTH_MIN_MM,
                             SCAN_DETOUR_DEPTH_MAX_MM);
     }
@@ -447,6 +452,9 @@ car_status_t scan_detour_plan (car_obstacle_profile_t const * p_profile)
     g_detour[1].amount = side_mm;
     g_detour[3].amount = depth_mm;
     g_detour[5].amount = side_mm;
+    /* Cast: side_mm is at most SCAN_DETOUR_SIDE_MAX_MM, and this is less. */
+    g_detour_clear_mm  = (uint16_t)(((uint32_t)side_mm * 1000u)
+                                    / SCAN_DETOUR_SIN45_RECIP);
 
     CAR_LOG(CAR_LOG_INFO, "detour sized for %u mm wide: side %u depth %u\n",
             (NULL != p_profile) ? p_profile->width_mm : 0u, side_mm,
@@ -486,6 +494,35 @@ car_status_t scan_detour_get_leg (uint8_t index, car_avoid_action_t side,
     }
 
     return status;
+}
+
+car_status_t scan_detour_beside (car_avoid_action_t side, bool * p_beside)
+{
+    car_status_t status   = CAR_ERR_RANGE;
+    uint16_t     range_mm = SONAR_MAX_RANGE_MM;
+
+    if ((NULL != p_beside)
+        && ((CAR_AVOID_LEFT == side) || (CAR_AVOID_RIGHT == side)))
+    {
+        /* Going round the left puts the obstacle on the right. */
+        uint16_t angle = (CAR_AVOID_LEFT == side) ? SCAN_MIN_ANGLE_DEG
+                                                  : SCAN_MAX_ANGLE_DEG;
+
+        *p_beside = (CAR_OK != scan_measure(angle, &range_mm))
+                    || (range_mm < g_detour_clear_mm);
+        CAR_LOG(CAR_LOG_INFO, "    look: %u mm, %s\n", range_mm,
+                *p_beside ? "still beside" : "clear");
+        status = CAR_OK;
+    }
+
+    return status;
+}
+
+car_status_t scan_detour_set_along (uint16_t along_mm)
+{
+    g_detour[SCAN_DETOUR_ALONG_LEG].amount = along_mm;
+
+    return CAR_OK;
 }
 
 /**

@@ -74,7 +74,7 @@ static void     accuracy_drive (uint8_t run);
 static void     accuracy_turn (bool b_left, uint8_t run);
 static bool     run_move (uint32_t * p_left, uint32_t * p_right,
                           uint32_t * p_msec);
-static uint32_t pulses_to_milli_mm (uint32_t pulses);
+static uint32_t pulses_to_milli_mm (uint32_t pulses, uint32_t permille);
 static void     idle (uint32_t msec);
 static void     print_noise (char const * p_when);
 
@@ -299,8 +299,10 @@ static void accuracy_drive (uint8_t run)
     {
         /* Casts: one 500 mm drive is well under 2^31 thousandths of a
          * mm, and the wheel base is a small constant. */
-        int32_t left_mmm  = (int32_t)pulses_to_milli_mm(left);
-        int32_t right_mmm = (int32_t)pulses_to_milli_mm(right);
+        int32_t left_mmm  = (int32_t)pulses_to_milli_mm(left,
+                                                        WHEEL_LEFT_PERMILLE);
+        int32_t right_mmm = (int32_t)pulses_to_milli_mm(right,
+                                                        WHEEL_RIGHT_PERMILLE);
         int32_t heading   = ((left_mmm - right_mmm) * BENCH_HEADING_TENTHS)
                             / ((int32_t)WHEEL_BASE_MM * 1000);
         int32_t magnitude = (heading < 0) ? -heading : heading;
@@ -340,8 +342,9 @@ static void accuracy_turn (bool b_left, uint8_t run)
 
     if (run_move(&left, &right, &msec))
     {
-        uint32_t arc_mmm = (pulses_to_milli_mm(left)
-                            + pulses_to_milli_mm(right)) / 2u;
+        uint32_t arc_mmm = (pulses_to_milli_mm(left, WHEEL_LEFT_PERMILLE)
+                            + pulses_to_milli_mm(right, WHEEL_RIGHT_PERMILLE))
+                           / 2u;
         uint32_t tenths  = (arc_mmm * BENCH_ARC_TENTHS)
                            / (WHEEL_BASE_MM * 1000u);
 
@@ -396,13 +399,17 @@ static bool run_move (uint32_t * p_left, uint32_t * p_right,
 /**
  * @brief Distance a wheel covers for a number of pulses.
  *
- * @param[in] pulses Encoder pulses, up to about 22000.
+ * @param[in] pulses   Encoder pulses, up to about 22000.
+ * @param[in] permille That wheel's share of WHEEL_CIRCUMFERENCE_MM.
  *
  * @return Thousandths of a millimetre.
  */
-static uint32_t pulses_to_milli_mm (uint32_t pulses)
+static uint32_t pulses_to_milli_mm (uint32_t pulses, uint32_t permille)
 {
-    return (pulses * WHEEL_CIRCUMFERENCE_MM * 1000u) / ENCODER_SLOTS_PER_REV;
+    /* Cast: 64 bits for the product, and the result, under 5 metres in
+     * thousandths of a mm, fits back into 32. */
+    return (uint32_t)(((uint64_t)pulses * WHEEL_CIRCUMFERENCE_MM * permille)
+                      / ENCODER_SLOTS_PER_REV);
 }
 
 /**

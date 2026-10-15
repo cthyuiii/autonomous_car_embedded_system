@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car 06 live characteristics</title>
+<style>
+:root {
+  --paper: #ffffff;
+  --ink: #111418;
+  --ink-2: #444b57;
+  --rule: #c3cad5;
+  --rule-2: #e4e9f0;
+  --blue: #1f4e9c;
+  --blue-deep: #163a76;
+  --tint: #e8eef7;
+  --red: #b3261e;
+  --red-tint: #fbeceb;
+  --amber: #8a5a00;
+  --green: #1b6e3a;
+  --face: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: Menlo, "SF Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html { background: var(--paper); color: var(--ink); font: 15px/1.4 var(--face); font-variant-numeric: tabular-nums; }
+body { min-height: 100vh; }
+::selection { background: var(--blue); color: #fff; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+* { scrollbar-color: var(--rule) transparent; scrollbar-width: thin; }
+button, select { font: inherit; color: inherit; }
+
+/* Part banner */
+.banner { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 24px;
+  padding: 16px 32px 14px; border-bottom: 3px solid var(--blue); }
+.banner h1 { font-size: 26px; line-height: 1.15; font-weight: 700; letter-spacing: -0.01em; }
+.banner h1 span { font-weight: 400; color: var(--ink-2); }
+.banner p { color: var(--ink-2); font-size: 14px; margin-top: 3px; }
+.badges { display: flex; }
+.badge { padding: 0 22px; border-left: 1px solid var(--rule); min-width: 150px; }
+.badge:last-child { padding-right: 0; }
+.badge dt { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+.badge dd { font-size: 26px; font-weight: 700; line-height: 1.15; white-space: nowrap; }
+.badge small { display: block; font-size: 13px; font-weight: 400; color: var(--ink-2); white-space: nowrap; }
+.link-mark { display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: 1px; }
+
+/* Body grid */
+main { display: grid; gap: 22px 24px; padding: 18px 32px 28px;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-areas: "table timing side" "table figs side"; align-items: start; }
+.area-table { grid-area: table; } .area-timing { grid-area: timing; }
+.area-figs { grid-area: figs; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
+.area-side { grid-area: side; display: flex; flex-direction: column; gap: 18px; }
+
+/* Section bars and captions, as a datasheet sets them */
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; background: var(--blue); color: #fff;
+  font-size: 13px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; padding: 6px 10px; min-height: 31px; }
+.caption { font-size: 13px; color: var(--ink-2); padding-top: 6px; }
+.caption b { color: var(--ink); }
+
+/* Characteristics */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--rule-2); vertical-align: baseline; }
+thead th { font-size: 12px; font-weight: 700; color: var(--ink-2); background: var(--tint); border-bottom: 1px solid var(--rule); }
+tbody th { font-weight: 400; color: var(--ink); }
+.group th { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--blue-deep);
+  background: var(--tint); padding-top: 5px; padding-bottom: 5px; }
+sub { line-height: 0; }
+td.v { text-align: right; font-weight: 700; font-size: 16px; white-space: nowrap; }
+td.v small { font-weight: 400; font-size: 13px; color: var(--ink-2); margin-left: 3px; }
+.sym { color: var(--ink-2); font-style: italic; width: 38px; }
+.stale td.v { color: var(--ink-2); }
+.sensors { display: inline-flex; gap: 6px; vertical-align: -2px; }
+.sensor { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 700; color: var(--ink-2); }
+.sensor i { width: 13px; height: 13px; border: 1.5px solid var(--ink); display: inline-block; }
+.sensor.dark i { background: var(--ink); }
+.hits { color: var(--red); }
+
+/* Timing diagram */
+.windows { display: inline-flex; border: 1px solid rgba(255,255,255,.55); }
+.windows button { background: transparent; border: 0; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: .04em;
+  padding: 5px 11px; cursor: pointer; text-transform: none; white-space: nowrap; }
+.windows button + button { border-left: 1px solid rgba(255,255,255,.55); }
+.windows button[aria-pressed="true"] { background: #fff; color: var(--blue); }
+.windows button:hover:not([aria-pressed="true"]) { background: var(--blue-deep); }
+.timing { border: 1px solid var(--rule); border-top: 0; position: relative; }
+#timing { display: block; width: 100%; height: 380px; }
+#timing text { font-family: var(--face); }
+.empty-note { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-2); font-size: 15px; text-align: center; padding: 24px; pointer-events: none; }
+.empty-note[hidden] { display: none; }
+#timing { cursor: crosshair; }
+.probe { position: absolute; top: 10px; min-width: 200px; max-width: 280px; background: var(--paper); border: 1px solid var(--blue);
+  padding: 7px 10px 8px; font-size: 13px; line-height: 1.45; pointer-events: none; box-shadow: 0 2px 10px rgba(17, 20, 24, .14); }
+.probe[hidden] { display: none; }
+.probe .probe-time { font-size: 12px; font-weight: 700; letter-spacing: .05em; color: var(--blue); }
+.probe dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin-top: 3px; }
+.probe dt { color: var(--ink-2); }
+.probe dd { font-weight: 700; }
+.probe .probe-hit { color: var(--red); }
+
+/* A bench sends console lines only: the console takes the centre. */
+@media (min-width: 1366px) { body.bench main { grid-template-areas: "table side side"; } }
+body.bench .area-timing, body.bench .area-figs { display: none; }
+body.bench .list { height: 560px; }
+
+/* Figure 2 and Table 2 */
+.figure { border: 1px solid var(--rule); border-top: 0; }
+#obstacle { display: block; width: 100%; height: auto; }
+.obstacle-facts { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--rule-2); }
+.obstacle-facts div { padding: 6px 10px; font-size: 13px; color: var(--ink-2); }
+.obstacle-facts b { display: block; font-size: 16px; color: var(--ink); }
+.obstacle-facts div + div { border-left: 1px solid var(--rule-2); }
+.humps td, .humps th { font-size: 14px; padding-top: 4px; padding-bottom: 4px; }
+
+/* Latest event */
+.latest { border: 1px solid var(--rule); padding: 12px 14px 14px; min-height: 120px; transition: background-color .2s ease-out, color .2s ease-out; }
+.latest .what { font-size: 34px; font-weight: 700; line-height: 1.1; letter-spacing: -0.01em; }
+.latest .when { font-size: 13px; color: var(--ink-2); margin-bottom: 4px; }
+.latest .detail { font-size: 16px; margin-top: 4px; }
+.latest.is-hit { background: var(--red); border-color: var(--red); color: #fff; }
+.latest.is-hit .when { color: #ffe1de; }
+.latest.was-hit .what { color: var(--red); }
+@media (prefers-reduced-motion: no-preference) {
+  .latest.is-hit { animation: strike .5s cubic-bezier(.16,1,.3,1); }
+  @keyframes strike { from { transform: translateX(-6px); } to { transform: none; } }
+  .row-new { animation: drop .25s cubic-bezier(.16,1,.3,1); }
+  @keyframes drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+}
+
+/* Events and console */
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--rule); }
+.tabs button { background: none; border: 0; border-bottom: 3px solid transparent; padding: 8px 14px 6px; font-weight: 700; font-size: 14px;
+  color: var(--ink-2); cursor: pointer; margin-bottom: -1px; }
+.tabs button[aria-selected="true"] { color: var(--blue); border-bottom-color: var(--blue); }
+.tabs button:hover { color: var(--ink); }
+.guide { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); padding: 5px 10px; background: var(--tint); }
+.list { height: 250px; overflow-y: auto; border: 1px solid var(--rule); border-top: 0; }
+.ev { display: grid; grid-template-columns: 62px 70px minmax(0, 1fr) 66px; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--rule-2); font-size: 14px; }
+.ev time, .ev .dist { color: var(--ink-2); font-size: 13px; }
+.ev .dist { text-align: right; white-space: nowrap; }
+.ev .type { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding-top: 1px; }
+.ev.hit .type, .ev.hit .text { color: var(--red); }
+.ev.barcode .type, .ev.command .type { color: var(--blue); }
+.console { font: 12.5px/1.55 var(--mono); padding: 8px 10px; white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+.console span { color: var(--ink-2); }
+.list-empty { padding: 18px 12px; color: var(--ink-2); font-size: 14px; }
+
+/* Commands and export */
+.commands { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding-top: 10px; }
+.commands button { height: 58px; border: 1px solid var(--blue); background: var(--blue); color: #fff; cursor: pointer;
+  font-size: 22px; font-weight: 700; line-height: 1; display: grid; place-content: center; gap: 4px; }
+.commands button small { font-size: 12px; font-weight: 400; }
+.commands button:hover:not(:disabled) { background: var(--blue-deep); }
+.commands button:active:not(:disabled) { transform: translateY(1px); }
+.commands button:disabled { background: var(--paper); color: var(--ink-2); border-color: var(--rule); cursor: not-allowed; }
+.commands button.sending { background: var(--tint); color: var(--blue); }
+.status { font-size: 13px; color: var(--ink-2); min-height: 19px; padding-top: 6px; }
+.status.error { color: var(--red); }
+.export { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding-top: 10px; }
+.export select { height: 40px; border: 1px solid var(--rule); background: var(--paper); padding: 0 8px; }
+.export button { height: 40px; padding: 0 16px; border: 1px solid var(--blue); background: var(--paper); color: var(--blue); font-weight: 700; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px; }
+.export button:hover:not(:disabled) { background: var(--tint); }
+.export button:disabled { color: var(--ink-2); border-color: var(--rule); cursor: not-allowed; }
+
+/* Narrower screens: projector widths first, then phones */
+@media (max-width: 1365px) {
+  main { grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+    grid-template-areas: "timing timing" "table side" "figs figs"; }
+  .badge { min-width: 0; padding: 0 16px; }
+}
+@media (max-width: 860px) {
+  .banner { grid-template-columns: 1fr; padding: 14px 16px; }
+  .badges { flex-wrap: wrap; row-gap: 10px; }
+  .badge { padding: 0 14px 0 0; border-left: 0; min-width: 45%; }
+  .badge dd { font-size: 22px; }
+  main { grid-template-columns: minmax(0, 1fr); grid-template-areas: "side" "timing" "table" "figs"; padding: 14px 16px 24px; }
+  .area-figs { grid-template-columns: minmax(0, 1fr); }
+  #timing { height: 380px; }
+  .list { height: 260px; }
+}
+</style>
+</head>
+<body>
+<header class="banner">
+  <div>
+    <h1>Car 06 <span>line-following car, live characteristics</span></h1>
+    <p id="sheet">Waiting for the first message</p>
+  </div>
+  <dl class="badges">
+    <div class="badge"><dt>State</dt><dd id="b-state">—</dd><small id="b-state-sub">no data yet</small></div>
+    <div class="badge"><dt>Last command</dt><dd id="b-cmd">—</dd><small id="b-cmd-sub">no barcode read yet</small></div>
+    <div class="badge"><dt>Link</dt><dd id="b-link"><svg class="link-mark" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.4"/></svg>Waiting</dd><small id="b-link-sub">connecting to the dashboard</small></div>
+  </dl>
+</header>
+
+<main>
+  <section class="area-table" aria-labelledby="t1">
+    <div class="bar" id="t1">Characteristics</div>
+    <table id="chars">
+      <thead><tr><th>Parameter</th><th class="sym">Sym.</th><th style="text-align:right">Value</th></tr></thead>
+      <tbody>
+        <tr class="group"><th colspan="3">Motion</th></tr>
+        <tr><th>Speed</th><td class="sym">v</td><td class="v" id="c-speed">—</td></tr>
+        <tr><th>Distance travelled</th><td class="sym">d</td><td class="v" id="c-dist">—</td></tr>
+        <tr><th>Encoder count, left</th><td class="sym">N<sub>L</sub></td><td class="v" id="c-encl">—</td></tr>
+        <tr><th>Encoder count, right</th><td class="sym">N<sub>R</sub></td><td class="v" id="c-encr">—</td></tr>
+        <tr><th>Heading</th><td class="sym">ψ</td><td class="v" id="c-head">—</td></tr>
+        <tr><th>Turn rate</th><td class="sym">ω</td><td class="v" id="c-rate">—</td></tr>
+        <tr><th>Motion event</th><td class="sym"></td><td class="v" id="c-motion">—</td></tr>
+        <tr><th>Hits today</th><td class="sym"></td><td class="v" id="c-hits">0</td></tr>
+        <tr class="group"><th colspan="3">Line and barcode</th></tr>
+        <tr><th>Line sensors</th><td class="sym"></td><td class="v" id="c-sensors">—</td></tr>
+        <tr><th>Last barcode</th><td class="sym"></td><td class="v" id="c-barcode">—</td></tr>
+        <tr><th>Barcodes read</th><td class="sym"></td><td class="v" id="c-barcodes">—</td></tr>
+        <tr class="group"><th colspan="3">Link</th></tr>
+        <tr><th>Broker</th><td class="sym"></td><td class="v" id="c-broker">—</td></tr>
+        <tr><th>Last message</th><td class="sym"></td><td class="v" id="c-age">—</td></tr>
+        <tr><th>Connections so far</th><td class="sym"></td><td class="v" id="c-sessions">—</td></tr>
+        <tr><th>Car up for</th><td class="sym"></td><td class="v" id="c-uptime">—</td></tr>
+      </tbody>
+    </table>
+    <p class="caption" id="t1-cap"><b>Table 1.</b> Sent by the car every 5 s.</p>
+  </section>
+
+  <section class="area-timing" aria-labelledby="f1">
+    <div class="bar"><span id="f1">Timing diagram</span>
+      <span class="windows" role="group" aria-label="Time window">
+        <button type="button" data-window="120">2 min</button><button type="button" data-window="600">10 min</button><button type="button" data-window="1800">30 min</button><button type="button" data-window="0">Whole day</button>
+      </span>
+    </div>
+    <div class="timing">
+      <svg id="timing" role="img" aria-label="Timing diagram of the car's action, line sensors, speed and pitch"></svg>
+      <div class="probe" id="probe" hidden></div>
+      <p class="empty-note" id="timing-empty">Nothing to draw yet. Switch the car on: its first message starts the diagram.</p>
+    </div>
+    <p class="caption"><b>Figure 1.</b> Action and events are drawn the moment they happen. Line sensors, speed and pitch are sampled every 5 s and held between samples; high means the sensor sees dark.</p>
+  </section>
+
+  <div class="area-figs">
+    <section aria-labelledby="f2">
+      <div class="bar" id="f2">Obstacle profile</div>
+      <div class="figure">
+        <svg id="obstacle" viewBox="0 0 400 205" role="img" aria-label="Last obstacle scan"></svg>
+        <div class="obstacle-facts">
+          <div>Closest<b id="o-range">—</b></div><div>Width<b id="o-width">—</b></div><div>Clear L / R<b id="o-clear">—</b></div>
+        </div>
+      </div>
+      <p class="caption" id="f2-cap"><b>Figure 2.</b> Last scan, seen from above, car at the bottom. No scan yet today.</p>
+    </section>
+    <section aria-labelledby="t2">
+      <div class="bar" id="t2">Terrain</div>
+      <table class="humps">
+        <tbody>
+          <tr><th>Pitch</th><td class="v" id="r-pitch">—</td></tr>
+          <tr><th>Terrain</th><td class="v" id="r-terrain">—</td></tr>
+          <tr><th>Roughness</th><td class="v" id="r-rough">—</td></tr>
+          <tr><th>Humps crossed</th><td class="v" id="r-humps">—</td></tr>
+          <tr><th>Highest hump peak</th><td class="v" id="r-peak">—</td></tr>
+        </tbody>
+      </table>
+      <table class="humps" id="hump-list">
+        <thead><tr><th>Hump</th><th>Time</th><th style="text-align:right">Height</th><th style="text-align:right">At</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="caption"><b>Table 2.</b> Measured coming off each hump.</p>
+    </section>
+  </div>
+
+  <aside class="area-side">
+    <section aria-labelledby="l1">
+      <div class="bar" id="l1">Latest event</div>
+      <div class="latest" id="latest" aria-live="polite">
+        <p class="when" id="latest-when">Nothing yet</p>
+        <p class="what" id="latest-what">—</p>
+        <p class="detail" id="latest-detail">Hits, barcodes, humps and obstacle scans show here the moment they happen.</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-events" aria-selected="true" aria-controls="panel-events">Events</button>
+        <button type="button" role="tab" id="tab-console" aria-selected="false" aria-controls="panel-console">Console</button>
+      </div>
+      <div class="guide"><span id="guide-first">—</span><span id="guide-mid">in view</span><span id="guide-last">—</span></div>
+      <div class="list" id="panel-events" role="tabpanel" aria-labelledby="tab-events" tabindex="0">
+        <p class="list-empty" id="events-empty">No events yet today.</p>
+      </div>
+      <div class="list" id="panel-console" role="tabpanel" aria-labelledby="tab-console" tabindex="0" hidden>
+        <div class="console" id="console"><span>No console lines yet. They come from car/log in the WiFi builds.</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="j1">
+      <div class="bar" id="j1">Junction command</div>
+      <div class="commands">
+        <button type="button" data-cmd="L">L<small>left</small></button>
+        <button type="button" data-cmd="R">R<small>right</small></button>
+        <button type="button" data-cmd="S">S<small>straight</small></button>
+        <button type="button" data-cmd="U">U<small>u-turn</small></button>
+      </div>
+      <p class="status" id="cmd-status" role="status">The car takes it at the next junction.</p>
+    </section>
+
+    <section aria-labelledby="x1">
+      <div class="bar" id="x1">Export by date</div>
+      <div class="export">
+        <select id="days" aria-label="Day to export"><option>Loading days…</option></select>
+        <button type="button" id="export"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1v8M3.5 5.5 7 9l3.5-3.5M1.5 12.5h11" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>Export</button>
+      </div>
+      <p class="status">A zip per day: a CSV for telemetry, terrain, events, heartbeat and commands, the console log, and the raw messages.</p>
+    </section>
+  </aside>
+</main>
+
+<script>
+"use strict";
+const STALE_MS = 12000;                     // Over two 5 s periods with nothing
+const HIT_MS = 8000;                        // How long a hit owns the latest box
+const BARCODES = { A: "left", B: "right", C: "straight", D: "u-turn" };
+const LETTERS = { L: "left", R: "right", S: "straight", U: "u-turn" };
+const NAV = ["none", "left", "right", "straight", "u-turn"];
+const STATES = ["init", "follow line", "decode barcode", "execute turn", "avoid obstacle", "recover line", "halted", "collision"];
+const MOTIONS = ["still", "accelerating", "turning", "climbing", "descending", "impact"];
+const JUNCTION_ACTIONS = ["stopped at junction", "turning left", "turning right", "u-turn"];
+
+const run = {
+  tel: null, telT: 0, ter: null, terT: 0, hb: null,
+  broker: "starting", streamUp: false, replaying: true,
+  firstT: 0, lastT: 0,
+  events: [], humps: [], obstacle: null, hits: 0,
+  actions: [], sensors: [], speeds: [], pitches: [],
+  command: null, latest: null, hitUntil: 0,
+  bench: null,                              // Name while a bench is running
+};
+let probeX = null;                          // Pointer over the diagram, px
+let windowSec = 600;
+try { const saved = localStorage.getItem("car-window"); if (saved !== null) windowSec = Number(saved); } catch (e) { /* private window */ }
+
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (t) => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+const metres = (mm) => `${(mm / 1000).toFixed(2)} m`;
+const ago = (ms) => ms < 60000 ? `${Math.round(ms / 1000)} s ago` : `${Math.floor(ms / 60000)} min ${Math.round(ms % 60000 / 1000)} s ago`;
+const duration = (ms) => { const s = Math.floor(ms / 1000); return s < 3600 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min`; };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function setV(id, html) { $(id).innerHTML = html; }
+function unit(value, u) { return `${value}<small>${u}</small>`; }
+
+/* ---------- incoming messages ---------- */
+function take(record) {
+  const { t, topic, payload } = record;
+  if (topic === "_broker") { run.broker = payload.state; return; }
+  run.firstT = run.firstT || t;
+  run.lastT = Math.max(run.lastT, t);
+
+  if (topic === "car/telemetry") {
+    run.tel = payload; run.telT = t;
+    run.sensors.push({ t, mask: payload.mask });
+    run.speeds.push({ t, v: payload.speed });
+    if (payload.imu) run.pitches.push({ t, v: payload.imu.pitch });
+    const last = run.actions[run.actions.length - 1];
+    if (!last || last.action !== payload.action) run.actions.push({ t, action: payload.action });
+  } else if (topic === "car/terrain") {
+    run.ter = payload; run.terT = t;
+    run.pitches.push({ t, v: payload.pitch });
+  } else if (topic === "car/heartbeat") {
+    run.hb = payload;
+  } else if (topic === "car/event") {
+    const ev = { t, ...payload };
+    run.events.push(ev);
+    if (ev.type === "action") {
+      run.actions.push({ t, action: ev.action });
+      if (run.command && run.command.state === "held" && JUNCTION_ACTIONS.includes(ev.action) && t >= run.command.t)
+        Object.assign(run.command, { state: "taken", takenT: t });
+    }
+    if (ev.type === "barcode") run.command = { t, letter: ev.code, turn: BARCODES[ev.code] || "not a course letter", state: "held", from: "barcode" };
+    if (ev.type === "hit") { run.hits += 1; run.hitUntil = Math.max(run.hitUntil, t + HIT_MS); }
+    if (ev.type === "hump") run.humps.push(ev);
+    if (ev.type === "obstacle") run.obstacle = ev;
+    if (ev.type !== "action") run.latest = ev;
+    if (!run.replaying) addEventRow(ev, true);
+  } else if (topic === "car/command") {
+    const letter = String(payload).trim().toUpperCase();
+    const ev = { t, type: "command", letter };
+    run.events.push(ev);
+    run.command = { t, letter, turn: LETTERS[letter] || letter, state: "held", from: "laptop" };
+    run.latest = ev;
+    if (!run.replaying) addEventRow(ev, true);
+  } else if (topic === "car/log") {
+    const text = String(payload);
+    const bench = text.match(/^(\w+) bench:/m);
+    addLog(t, text);
+    if (bench || /car firmware starting/.test(text)) setBench(bench ? bench[1] : null);
+  }
+}
+
+/* Every bench's first line is "<name> bench: ...", and the car's is "car
+   firmware starting", so the latest of those says what is running. */
+function setBench(name) {
+  if (name === run.bench) return;
+  run.bench = name;
+  document.body.classList.toggle("bench", Boolean(name));
+  if (!run.replaying) selectTab(name ? "tab-console" : "tab-events");
+}
+
+/* ---------- characteristics, banner, terrain, obstacle ---------- */
+function linkState(now) {
+  if (!run.streamUp) return { word: "No dashboard", sub: "dashboard.py is not running", kind: "down" };
+  if (run.broker === "down") return { word: "No broker", sub: "start mosquitto on this laptop", kind: "down" };
+  if (!run.lastT) return { word: "Waiting", sub: "no message from the car yet", kind: "wait" };
+  const age = now - run.lastT;
+  if (age > STALE_MS) return { word: "Quiet", sub: `last message ${ago(age)}`, kind: "stale" };
+  return { word: "Live", sub: `last message ${ago(age)}`, kind: "live" };
+}
+
+function linkMark(kind) {
+  // State by shape as well as colour: solid live, dashed stale, crossed down.
+  const colour = { live: "var(--green)", stale: "var(--amber)", wait: "var(--ink-2)", down: "var(--red)" }[kind];
+  const shape = {
+    live: `<circle cx="7" cy="7" r="6" fill="${colour}"/>`,
+    stale: `<circle cx="7" cy="7" r="5.5" fill="none" stroke="${colour}" stroke-width="2" stroke-dasharray="3 2.4"/>`,
+    wait: `<circle cx="7" cy="7" r="5.5" fill="none" stroke="${colour}" stroke-width="2" stroke-dasharray="3 2.4"/>`,
+    down: `<path d="M2 2l10 10M12 2 2 12" stroke="${colour}" stroke-width="2.4"/>`,
+  }[kind];
+  return `<svg class="link-mark" viewBox="0 0 14 14" aria-hidden="true">${shape}</svg>`;
+}
+
+function renderBanner(now) {
+  const link = linkState(now);
+  setV("b-link", `${linkMark(link.kind)}${link.word}`);
+  $("b-link").style.color = link.kind === "down" ? "var(--red)" : "";
+  $("b-link-sub").textContent = link.sub;
+
+  const tel = run.tel;
+  const hit = now < run.hitUntil;
+  if (run.bench) {
+    $("b-state").textContent = `${cap(run.bench)} bench`;
+    $("b-state").style.color = "";
+    $("b-state-sub").textContent = "console lines only, below";
+  } else {
+    $("b-state").textContent = hit ? "Hit" : (tel ? cap(tel.action) : "—");
+    $("b-state").style.color = hit ? "var(--red)" : "";
+    $("b-state-sub").textContent = tel ? `state ${STATES[tel.state] || tel.state}` : "no data yet";
+  }
+
+  const c = run.command;
+  if (c) {
+    $("b-cmd").textContent = `${c.letter} · ${cap(c.turn)}`;
+    $("b-cmd-sub").textContent = c.state === "held"
+      ? `${c.from === "laptop" ? "sent" : "read"} ${clock(c.t)}, held for next junction`
+      : `taken at the junction, ${clock(c.takenT)}`;
+  }
+  if (run.firstT) {
+    const d = new Date(run.firstT);
+    $("sheet").textContent = `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })} · first message ${clock(run.firstT)}`;
+  }
+}
+
+function renderTable(now) {
+  const tel = run.tel;
+  const stale = !tel || now - run.telT > STALE_MS;
+  $("chars").classList.toggle("stale", Boolean(tel) && stale);
+  $("t1-cap").innerHTML = tel
+    ? `<b>Table 1.</b> Sent by the car every 5 s. As of ${clock(run.telT)}${stale ? `, <span style="color:var(--amber)">${ago(now - run.telT)}: the car has gone quiet</span>` : ""}.`
+    : `<b>Table 1.</b> Sent by the car every 5 s. Nothing received yet today.`;
+  if (tel) {
+    setV("c-speed", unit(tel.speed, "mm/s"));
+    setV("c-dist", metres(tel.dist));
+    setV("c-encl", tel.encl);
+    setV("c-encr", tel.encr);
+    setV("c-head", unit(tel.imu.head, "°"));
+    setV("c-rate", unit(tel.imu.rate, "°/s"));
+    setV("c-motion", MOTIONS[tel.imu.event] || tel.imu.event);
+    const s = (bit, name) => `<span class="sensor${tel.mask & bit ? " dark" : ""}" title="${name} ${tel.mask & bit ? "dark" : "light"}"><i></i>${name[0].toUpperCase()}</span>`;
+    setV("c-sensors", `<span class="sensors" aria-label="left ${tel.mask & 1 ? "dark" : "light"}, barcode ${tel.mask & 2 ? "dark" : "light"}, right ${tel.mask & 4 ? "dark" : "light"}">${s(1, "left")}${s(2, "barcode")}${s(4, "right")}</span>`);
+    setV("c-barcode", tel.barcode ? `${tel.barcode}<small>${BARCODES[tel.barcode] || "unused"}</small>` : "none yet");
+    setV("c-barcodes", tel.barcodes);
+  }
+  setV("c-hits", `<span class="${run.hits ? "hits" : ""}">${run.hits}</span>`);
+  setV("c-broker", { up: "connected", connecting: "connecting", down: "not running", starting: "starting" }[run.broker] || run.broker);
+  setV("c-age", run.lastT ? ago(now - run.lastT) : "—");
+  if (run.hb) { setV("c-sessions", run.hb.sessions); setV("c-uptime", duration(run.hb.uptime_ms)); }
+}
+
+function renderTerrain() {
+  const ter = run.ter;
+  if (ter) {
+    setV("r-pitch", `${unit(`${ter.pitch > 0 ? "+" : ""}${ter.pitch}`, "°")}${ter.ok ? "" : "<small>not trusted</small>"}`);
+    setV("r-terrain", ter.terrain === "STABLE" ? "Stable" : "Rough");
+    setV("r-rough", unit(ter.rough, "mg"));
+    setV("r-humps", ter.humps);
+    setV("r-peak", ter.peak_mm ? unit(ter.peak_mm, "mm") : "none yet");
+  }
+  const body = $("hump-list").tBodies[0];
+  body.innerHTML = run.humps.length
+    ? run.humps.slice(-6).reverse().map((h) => `<tr><td>${h.count}</td><td>${clock(h.t)}</td><td class="v">${unit(h.mm, "mm")}</td><td class="v">${metres(h.dist)}</td></tr>`).join("")
+    : `<tr><td colspan="4" style="color:var(--ink-2)">No humps yet today.</td></tr>`;
+}
+
+function renderObstacle() {
+  const svg = $("obstacle");
+  const cx = 200, cy = 196, R = 180, maxMm = 400;
+  let g = "";
+  for (const mm of [100, 200, 300, 400]) {
+    const r = R * mm / maxMm;
+    g += `<path d="M${cx - r} ${cy}A${r} ${r} 0 0 1 ${cx + r} ${cy}" fill="none" stroke="var(--rule-2)"/>`;
+    g += `<text x="${cx + 4}" y="${cy - r + 13}" font-size="11" fill="var(--ink-2)">${mm}</text>`;
+  }
+  for (const deg of [-60, -30, 0, 30, 60]) {
+    const a = (90 + deg) * Math.PI / 180;
+    g += `<line x1="${cx}" y1="${cy}" x2="${cx + R * Math.cos(a)}" y2="${cy - R * Math.sin(a)}" stroke="var(--rule-2)"/>`;
+  }
+  g += `<rect x="${cx - 9}" y="${cy - 14}" width="18" height="16" fill="var(--ink)"/>`;
+  const o = run.obstacle;
+  if (o && o.found) {
+    const r = R * Math.min(o.range, maxMm) / maxMm;
+    const half = Math.min(Math.PI / 2, (o.width / 2) / Math.max(o.range, 1));
+    const mid = (90 + o.bearing) * Math.PI / 180;
+    const p = (a) => `${cx + r * Math.cos(a)} ${cy - r * Math.sin(a)}`;
+    g += `<path d="M${p(mid - half)}A${r} ${r} 0 0 0 ${p(mid + half)}" fill="none" stroke="var(--ink)" stroke-width="9" stroke-linecap="butt"/>`;
+    g += `<line x1="${cx}" y1="${cy - 14}" x2="${cx + (r - 6) * Math.cos(mid)}" y2="${cy - (r - 6) * Math.sin(mid)}" stroke="var(--blue)" stroke-dasharray="4 3"/>`;
+    $("o-range").textContent = `${o.range} mm`;
+    $("o-width").textContent = `${o.width} mm`;
+    $("o-clear").textContent = `${o.left || "—"} / ${o.right || "—"}`;
+    $("f2-cap").innerHTML = `<b>Figure 2.</b> Scan at ${clock(o.t)}, ${metres(o.dist)}, ${Math.abs(o.bearing)}° ${o.bearing >= 0 ? "left" : "right"}. Dash: not measured.`;
+  } else if (o) {
+    $("f2-cap").innerHTML = `<b>Figure 2.</b> Scan at ${clock(o.t)} found nothing in range.`;
+  }
+  svg.innerHTML = g;
+}
+
+/* ---------- latest event and the lists ---------- */
+function describe(ev) {
+  switch (ev.type) {
+    case "hit": return ["Hit", "Jolt or stalled wheel. The car stops and backs off."];
+    case "barcode": return [`Barcode ${ev.code}`, BARCODES[ev.code] ? `Turn ${BARCODES[ev.code]} at the next junction. Barcode ${ev.count} today.` : `Not a course letter. Barcode ${ev.count} today.`];
+    case "hump": return ["Hump", `${ev.mm} mm high. Highest so far ${ev.peak_mm} mm.`];
+    case "obstacle": return ev.found ? ["Obstacle", `${ev.range} mm ahead, ${ev.width} mm wide, ${Math.abs(ev.bearing)}° ${ev.bearing >= 0 ? "left" : "right"}.`] : ["Scan clear", "Nothing found in range."];
+    case "command": return [`Sent ${ev.letter}`, `${cap(LETTERS[ev.letter] || ev.letter)} at the next junction, from this laptop.`];
+    case "action": return ["Action", cap(ev.action)];
+    default: return [cap(ev.type), ""];
+  }
+}
+
+function summary(ev) {
+  switch (ev.type) {
+    case "hit": return "Jolt or stalled wheel";
+    case "barcode": return `${ev.code} · ${BARCODES[ev.code] ? `turn ${BARCODES[ev.code]} at next junction` : "not a course letter"}`;
+    case "hump": return `${ev.mm} mm (peak ${ev.peak_mm})`;
+    case "obstacle": return ev.found ? `${ev.range} mm ahead, ${ev.width} mm wide` : "Scan clear";
+    case "command": return `${cap(LETTERS[ev.letter] || ev.letter)} at next junction`;
+    case "action": return cap(ev.action);
+    default: return "";
+  }
+}
+
+function renderLatest(now) {
+  const ev = run.latest;
+  const box = $("latest");
+  box.classList.toggle("is-hit", now < run.hitUntil);
+  box.classList.toggle("was-hit", Boolean(ev) && ev.type === "hit" && now >= run.hitUntil);
+  if (!ev) return;
+  const [what, detail] = describe(ev);
+  $("latest-when").textContent = `${clock(ev.t)}${ev.dist !== undefined ? ` · at ${metres(ev.dist)}` : ""} · ${ago(now - ev.t)}`;
+  $("latest-what").textContent = what;
+  $("latest-detail").textContent = detail;
+}
+
+function addEventRow(ev, fresh) {
+  $("events-empty")?.remove();
+  const [what, detail] = describe(ev);
+  const row = document.createElement("div");
+  row.className = `ev ${ev.type}${fresh ? " row-new" : ""}`;
+  row.dataset.t = ev.t;
+  const label = ev.type === "action" ? "action" : ev.type === "command" ? "sent" : ev.type;
+  const text = summary(ev);
+  row.innerHTML = `<time>${clock(ev.t)}</time><span class="type">${esc(label)}</span><span class="text">${esc(text)}</span><span class="dist">${ev.dist !== undefined ? metres(ev.dist) : ""}</span>`;
+  $("panel-events").prepend(row);
+  if (fresh) guide();
+}
+
+function addLog(t, text) {
+  const box = $("console");
+  if (box.firstElementChild && box.firstElementChild.tagName === "SPAN" && !box.dataset.started) { box.innerHTML = ""; box.dataset.started = "1"; }
+  const panel = $("panel-console");
+  const atBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 30;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    box.append(Object.assign(document.createElement("span"), { textContent: `${clock(t)}  ` }), `${line}\n`);
+  }
+  while (box.childNodes.length > 4000) box.firstChild.remove();
+  if (atBottom) panel.scrollTop = panel.scrollHeight;
+}
+
+function guide() {
+  // The first and last time in view, like the guide words on a page head.
+  const panel = $("panel-events");
+  if (panel.hidden) return;
+  const top = panel.getBoundingClientRect();
+  const rows = [...panel.querySelectorAll(".ev")].filter((r) => { const b = r.getBoundingClientRect(); return b.bottom > top.top && b.top < top.bottom; });
+  $("guide-first").textContent = rows.length ? clock(Number(rows[rows.length - 1].dataset.t)) : "—";
+  $("guide-last").textContent = rows.length ? clock(Number(rows[0].dataset.t)) : "—";
+  $("guide-mid").textContent = rows.length ? `${rows.length} of ${panel.querySelectorAll(".ev").length} events in view` : "in view";
+}
+
+/* ---------- Figure 1: the timing diagram ---------- */
+function renderTiming(now) {
+  const svg = $("timing");
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 380;
+  $("timing-empty").hidden = Boolean(run.firstT);
+  if (!run.firstT) { svg.innerHTML = ""; return; }
+  const span = windowSec ? windowSec * 1000 : Math.max(60000, now - run.firstT);
+  const t0 = now - span, L = 96, Rp = 14, X = (t) => L + (W - L - Rp) * (t - t0) / span;
+  const lanes = { action: [8, 30], l: [50, 18], b: [76, 18], r: [102, 18], speed: [134, 64], pitch: [214, 80], events: [306, 36] };
+  const axisY = H - 24;
+  let g = "";
+
+  // Divisions
+  const steps = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].map((s) => s * 1000);
+  const step = steps.find((s) => (W - L - Rp) * s / span >= 64) || 3600000;
+  for (let t = Math.ceil(t0 / step) * step; t <= now; t += step) {
+    const x = X(t);
+    g += `<line x1="${x}" y1="6" x2="${x}" y2="${axisY}" stroke="var(--rule-2)"/>`;
+    g += `<text x="${x}" y="${axisY + 16}" font-size="11" text-anchor="middle" fill="var(--ink-2)">${step < 60000 ? clock(t) : clock(t).slice(0, 5)}</text>`;
+  }
+  g += `<line x1="${L}" y1="${axisY}" x2="${W - Rp}" y2="${axisY}" stroke="var(--ink)"/>`;
+
+  const label = (name, [y, h], sub) => `<text x="10" y="${y + h / 2 + 4}" font-size="12" font-weight="700" fill="var(--ink)">${name}</text>` +
+    (sub ? `<text x="10" y="${y + h / 2 + 18}" font-size="10.5" fill="var(--ink-2)">${sub}</text>` : "");
+  g += label("ACTION", lanes.action) + label("LINE L", lanes.l) + label("LINE B", lanes.b) + label("LINE R", lanes.r) +
+       label("SPEED", lanes.speed, "mm/s") + label("PITCH", lanes.pitch, "degrees") + label("EVENTS", lanes.events);
+
+  // Where data stops: after a quiet spell the held value is not drawn on.
+  const until = (t) => Math.min(now, run.lastT + STALE_MS, t);
+  const inView = (list) => { const before = list.filter((p) => p.t < t0).pop(); return (before ? [before] : []).concat(list.filter((p) => p.t >= t0)); };
+
+  // Action as a bus lane: each value a hexagon segment, labelled when it fits.
+  const [ay, ah] = lanes.action, acts = inView(run.actions);
+  acts.forEach((a, i) => {
+    const end = until(i + 1 < acts.length ? acts[i + 1].t : now);
+    const xa = Math.max(L, X(a.t)), xb = Math.max(xa + 4, X(end));   // Never too thin to point at
+    const k = Math.min(5, (xb - xa) / 2);
+    g += `<path d="M${xa} ${ay + ah / 2}L${xa + k} ${ay}H${xb - k}L${xb} ${ay + ah / 2}L${xb - k} ${ay + ah}H${xa + k}Z" fill="${a.action === "backing off after hit" ? "var(--red-tint)" : "var(--tint)"}" stroke="var(--blue)" stroke-width="1.2"><title>${esc(cap(a.action))}, ${clock(a.t)}, ${((end - a.t) / 1000).toFixed(1)} s</title></path>`;
+    if (xb - xa > a.action.length * 6.4 + 14) g += `<text x="${xa + 8}" y="${ay + ah / 2 + 4}" font-size="11.5" fill="var(--ink)">${esc(a.action)}</text>`;
+  });
+
+  // Line sensors as digital lanes: high is dark.
+  const sens = inView(run.sensors);
+  for (const [lane, bit] of [["l", 1], ["b", 2], ["r", 4]]) {
+    const [y, h] = lanes[lane];
+    let d = "", prev = null;
+    sens.forEach((p, i) => {
+      const xa = Math.max(L, X(p.t)), xb = X(until(i + 1 < sens.length ? sens[i + 1].t : now));
+      const yy = p.mask & bit ? y : y + h;
+      d += prev === null ? `M${xa} ${yy}` : `V${yy}`;
+      d += `H${xb}`; prev = yy;
+    });
+    g += `<line x1="${L}" y1="${y + h}" x2="${W - Rp}" y2="${y + h}" stroke="var(--rule-2)" stroke-dasharray="2 3"/>`;
+    if (d) g += `<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="1.8"/>`;
+  }
+
+  // Speed and pitch as analog traces with a dot at each sample.
+  const trace = (list, [y, h], lo, hi, colour) => {
+    const pts = inView(list).filter((p) => p.t <= now);
+    const Y = (v) => y + h - h * (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo);
+    let s = `<line x1="${L}" y1="${y + h}" x2="${W - Rp}" y2="${y + h}" stroke="var(--rule)"/>`;
+    s += `<text x="${L - 6}" y="${y + 9}" font-size="10.5" text-anchor="end" fill="var(--ink-2)">${hi}</text><text x="${L - 6}" y="${y + h}" font-size="10.5" text-anchor="end" fill="var(--ink-2)">${lo}</text>`;
+    if (lo < 0) s += `<line x1="${L}" y1="${Y(0)}" x2="${W - Rp}" y2="${Y(0)}" stroke="var(--rule)" stroke-dasharray="4 3"/>`;
+    if (pts.length) {
+      s += `<polyline points="${pts.map((p) => `${Math.max(L, X(p.t))},${Y(p.v)}`).join(" ")}" fill="none" stroke="${colour}" stroke-width="2"/>`;
+      if ((W - L - Rp) * 5000 / span >= 8)
+        s += pts.filter((p) => p.t >= t0).map((p) => `<circle cx="${X(p.t)}" cy="${Y(p.v)}" r="2.4" fill="${colour}"/>`).join("");
+    }
+    return s;
+  };
+  const vmax = Math.max(200, ...run.speeds.map((p) => p.v));
+  g += trace(run.speeds, lanes.speed, 0, Math.ceil(vmax / 100) * 100, "var(--blue)");
+  g += trace(run.pitches, lanes.pitch, -15, 15, "var(--ink)");
+
+  // Events: a marker through every lane, its name in the event lane.
+  const [ey, eh] = lanes.events;
+  const rowEnd = [-99, -99];
+  for (const ev of run.events.filter((e) => e.type !== "action" && e.t >= t0)) {
+    const x = X(ev.t), hit = ev.type === "hit";
+    const colour = hit ? "var(--red)" : ev.type === "barcode" || ev.type === "command" ? "var(--blue)" : "var(--ink)";
+    g += `<line x1="${x}" y1="6" x2="${x}" y2="${ey + eh}" stroke="${colour}" stroke-width="${hit ? 2 : 1}" stroke-dasharray="${hit ? "" : "3 3"}" opacity="${hit ? 1 : .7}"/>`;
+    const name = { hit: "HIT", barcode: `${ev.code}`, hump: `${ev.mm} mm`, obstacle: ev.found ? `OBST ${ev.range}` : "CLEAR", command: `SENT ${ev.letter}` }[ev.type] || ev.type;
+    const wide = name.length * 7, flip = x + 3 + wide > W - Rp;
+    const start = flip ? x - 3 - wide : x + 3;
+    const row = rowEnd.findIndex((end) => start > end + 6);
+    if (row >= 0) {
+      rowEnd[row] = flip ? x : x + 3 + wide;
+      g += `<text x="${flip ? x - 3 : x + 3}" y="${ey + 14 + row * 16}" font-size="11.5" font-weight="700" fill="${colour}" text-anchor="${flip ? "end" : "start"}">${esc(name)}</text>`;
+    }
+  }
+  g += `<line x1="${X(now)}" y1="6" x2="${X(now)}" y2="${axisY}" stroke="var(--blue)" stroke-width="1"/>`;
+  g += probe(L, W - Rp, axisY, t0, span);
+  svg.innerHTML = g;
+}
+
+/* The probe: point anywhere on the diagram for what the car was doing
+   then, so an action too short to label can still be read. */
+function probe(left, right, axisY, t0, span) {
+  const box = $("probe");
+  if (probeX === null || probeX < left || probeX > right) { box.hidden = true; return ""; }
+  const t = t0 + (probeX - left) * span / (right - left);
+  const at = (list) => { for (let i = list.length - 1; i >= 0; i--) if (list[i].t <= t) return list[i]; return null; };
+  const act = at(run.actions), next = act && run.actions[run.actions.indexOf(act) + 1];
+  const sens = at(run.sensors), speed = at(run.speeds), pitch = at(run.pitches);
+  const near = span * 8 / (right - left);                 // 8 px either side
+  const events = run.events.filter((e) => e.type !== "action" && Math.abs(e.t - t) <= near);
+  const rows = [
+    ["Action", act ? `${cap(act.action)}${next ? `, ${((next.t - act.t) / 1000).toFixed(1)} s` : ""}` : "—"],
+    ["Line", sens ? ["left", "barcode", "right"].map((n, i) => `${n[0].toUpperCase()} ${sens.mask & (1 << i) ? "dark" : "light"}`).join(", ") : "—"],
+    ["Speed", speed ? `${speed.v} mm/s` : "—"],
+    ["Pitch", pitch ? `${pitch.v}°` : "—"],
+  ];
+  box.innerHTML = `<div class="probe-time">${clock(t)}</div><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` +
+    events.map((e) => `<div class="${e.type === "hit" ? "probe-hit" : ""}">${clock(e.t)} ${esc(describe(e)[0])}: ${esc(summary(e))}</div>`).join("");
+  box.hidden = false;
+  const flip = probeX + 16 + box.offsetWidth > right;
+  box.style.left = `${flip ? probeX - 16 - box.offsetWidth : probeX + 16}px`;
+  return `<line x1="${probeX}" y1="6" x2="${probeX}" y2="${axisY}" stroke="var(--blue)" stroke-dasharray="4 3"/>`;
+}
+
+/* ---------- controls ---------- */
+const cap = (s) => (s ? String(s)[0].toUpperCase() + String(s).slice(1) : "");
+
+function setWindow(sec) {
+  windowSec = sec;
+  try { localStorage.setItem("car-window", String(sec)); } catch (e) { /* private window */ }
+  document.querySelectorAll("[data-window]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.window) === sec)));
+  renderTiming(Date.now());
+}
+document.querySelectorAll("[data-window]").forEach((b) => b.addEventListener("click", () => setWindow(Number(b.dataset.window))));
+
+document.querySelectorAll("[data-cmd]").forEach((button) => button.addEventListener("click", async () => {
+  const letter = button.dataset.cmd, status = $("cmd-status");
+  button.classList.add("sending");
+  status.className = "status"; status.textContent = `Sending ${letter}…`;
+  try {
+    const reply = await fetch("/command", { method: "POST", body: letter });
+    if (!reply.ok) throw new Error(await reply.text());
+    status.textContent = `Sent ${letter} (${LETTERS[letter]}) at ${clock(Date.now())}. The car takes it at the next junction.`;
+  } catch (err) {
+    status.className = "status error";
+    status.textContent = `Not sent: ${err.message || "the dashboard is not running"}. Is the broker running on this laptop?`;
+  } finally { button.classList.remove("sending"); }
+}));
+
+function setCommandsEnabled() {
+  const ok = run.streamUp && run.broker !== "down";
+  document.querySelectorAll("[data-cmd]").forEach((b) => { b.disabled = !ok; });
+}
+
+async function loadDays() {
+  const select = $("days"), button = $("export");
+  try {
+    const days = await (await fetch("/days")).json();
+    const keep = select.value;
+    select.innerHTML = days.length
+      ? days.map((d) => `<option value="${d.date}">${new Date(`${d.date}T12:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })} · ${d.messages.toLocaleString()} messages</option>`).join("")
+      : `<option value="">No days kept yet</option>`;
+    if (days.some((d) => d.date === keep)) select.value = keep;
+    button.disabled = !days.length;
+  } catch (e) {
+    select.innerHTML = `<option value="">Dashboard not running</option>`;
+    button.disabled = true;
+  }
+}
+$("export").addEventListener("click", () => { if ($("days").value) location.href = `/export?date=${$("days").value}`; });
+$("days").addEventListener("focus", loadDays);
+
+function selectTab(id) {
+  for (const tab of document.querySelectorAll("[role=tab]")) {
+    const on = tab.id === id;
+    tab.setAttribute("aria-selected", String(on));
+    $(tab.getAttribute("aria-controls")).hidden = !on;
+  }
+  const events = id === "tab-events";
+  if (!events) $("panel-console").scrollTop = $("panel-console").scrollHeight;
+  $("guide-mid").textContent = events ? "in view" : "console, newest at the bottom";
+  if (events) guide(); else { $("guide-first").textContent = ""; $("guide-last").textContent = ""; }
+}
+for (const tab of document.querySelectorAll("[role=tab]")) tab.addEventListener("click", () => selectTab(tab.id));
+$("timing").addEventListener("mousemove", (e) => { probeX = e.offsetX; renderTiming(Date.now()); });
+$("timing").addEventListener("mouseleave", () => { probeX = null; renderTiming(Date.now()); });
+$("panel-events").addEventListener("scroll", guide, { passive: true });
+
+/* ---------- the stream ---------- */
+function renderAll() {
+  const now = Date.now();
+  renderBanner(now); renderTable(now); renderTerrain(); renderObstacle(); renderLatest(now); renderTiming(now);
+  setCommandsEnabled();
+}
+
+function connect() {
+  const source = new EventSource("/stream");
+  // After a drop the server replays the whole day again: start clean.
+  source.onopen = () => { if (!run.replaying) location.reload(); run.streamUp = true; renderAll(); };
+  source.onmessage = (e) => { take(JSON.parse(e.data)); if (!run.replaying) renderAll(); };
+  source.addEventListener("replayed", () => {
+    run.replaying = false;
+    for (const ev of run.events) addEventRow(ev, false);
+    if (run.bench) selectTab("tab-console");
+    guide(); renderAll(); loadDays();
+  });
+  source.onerror = () => {
+    run.streamUp = false; renderAll();
+    if (source.readyState === EventSource.CLOSED) setTimeout(connect, 2000);
+  };
+}
+
+setWindow(windowSec);
+connect();
+setInterval(() => { const now = Date.now(); renderBanner(now); renderTable(now); renderLatest(now); renderTiming(now); setCommandsEnabled(); }, 1000);
+window.addEventListener("resize", () => renderTiming(Date.now()));
+</script>
+</body>
+</html>

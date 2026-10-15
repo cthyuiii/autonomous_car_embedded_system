@@ -21,6 +21,16 @@
 /** Called from comms_poll() when a command arrives on COMMS_TOPIC_COMMAND. */
 typedef void (*comms_command_handler_t)(car_nav_command_t command);
 
+/** Something that happened, sent once on COMMS_TOPIC_EVENT. */
+typedef enum
+{
+    COMMS_EVENT_ACTION = 0,     /* The action changed */
+    COMMS_EVENT_BARCODE,        /* A barcode was decoded */
+    COMMS_EVENT_HUMP,           /* A hump was crossed and measured */
+    COMMS_EVENT_HIT,            /* A collision or a stalled wheel */
+    COMMS_EVENT_OBSTACLE        /* An obstacle scan finished */
+} comms_event_t;
+
 /**
  * @brief Start WiFi association and the MQTT client without blocking.
  *
@@ -69,6 +79,19 @@ car_status_t comms_publish_telemetry (car_telemetry_t const * p_telemetry);
  *         CAR_ERR_RANGE if p_telemetry is NULL.
  */
 car_status_t comms_publish_terrain (car_telemetry_t const * p_telemetry);
+
+/**
+ * @brief Publish one event on COMMS_TOPIC_EVENT, with the fields of the
+ *        snapshot that belong to it.
+ *
+ * @param[in] p_telemetry Snapshot taken after the event, must not be NULL.
+ * @param[in] event       What happened.
+ *
+ * @return CAR_OK if queued, CAR_ERR_TIMEOUT if not connected, or
+ *         CAR_ERR_RANGE if p_telemetry is NULL or the event is unknown.
+ */
+car_status_t comms_publish_event (car_telemetry_t const * p_telemetry,
+                                  comms_event_t event);
 
 /**
  * @brief Register the function that receives remote navigation commands.

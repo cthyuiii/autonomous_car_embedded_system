@@ -1,21 +1,22 @@
 /** @file bench_comms.c
  *
  * @brief Connects, then publishes the car's three messages on the car's
- *        timing and answers commands.
+ *        timing, and an event for each command it answers.
  *
  * Build and flash with `./flash.sh --wifi comms` to a Pico W with the broker
  * reachable, then watch every topic from a laptop:
  *
  *     mosquitto_sub -h <broker ip> -t 'car/#' -v
  *
- * - car/telemetry every CAR_TELEMETRY_PERIOD_MSEC (200 ms)
- * - car/heartbeat every COMMS_HEARTBEAT_PERIOD_MSEC (1 s)
- * - car/terrain every CAR_TERRAIN_PERIOD_MSEC (2 s)
+ * - car/telemetry every CAR_TELEMETRY_PERIOD_MSEC (5 s)
+ * - car/heartbeat every COMMS_HEARTBEAT_PERIOD_MSEC (5 s)
+ * - car/terrain every CAR_TERRAIN_PERIOD_MSEC (5 s)
  *
  * Only the radio is fitted, so the readings in them stay at zero. What
  * moves is the command path: `mosquitto_pub -h <broker ip> -t car/command
- * -m L` shows up in the next telemetry as `nav` 1 with `action`
- * "turning left", and R, S and U do the same for their commands.
+ * -m L` sends car/event `{"type":"action","action":"turning left",...}`
+ * straight away, and the next telemetry has `nav` 1. R, S and U do the
+ * same for their commands.
  *
  * Owner: Buddy 1, WiFi communication, command and telemetry. Extend it as you
  * need; nothing else depends on it.
@@ -43,9 +44,10 @@ static void answer_command (car_nav_command_t command);
 
 INT usermain (void)
 {
-    uint32_t last_telemetry_msec = 0u;
-    uint32_t last_heartbeat_msec = 0u;
-    uint32_t last_terrain_msec   = 0u;
+    uint32_t     last_telemetry_msec = 0u;
+    uint32_t     last_heartbeat_msec = 0u;
+    uint32_t     last_terrain_msec   = 0u;
+    car_action_t last_action         = g_telemetry.action;
 
     (void)tk_dly_tsk(BENCH_STARTUP_MSEC);
     CAR_LOG(CAR_LOG_INFO, "comms bench: broker %s\n", COMMS_MQTT_BROKER_HOST);
@@ -64,6 +66,13 @@ INT usermain (void)
         uint32_t now = car_time_msec();
 
         (void)comms_poll();
+
+        if ((g_telemetry.action != last_action)
+            && (CAR_OK == comms_publish_event(&g_telemetry,
+                                              COMMS_EVENT_ACTION)))
+        {
+            last_action = g_telemetry.action;
+        }
 
         if ((now - last_telemetry_msec) >= CAR_TELEMETRY_PERIOD_MSEC)
         {

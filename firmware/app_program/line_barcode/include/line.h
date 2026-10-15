@@ -138,10 +138,11 @@ car_status_t line_get_raw_levels (uint8_t * p_levels);
 car_status_t line_get_health (uint8_t * p_working_mask);
 
 /**
- * @brief Report whether both line sensors currently see the line.
+ * @brief Report whether the car is at a junction.
  *
- * @return true at a junction or a perpendicular bar, once the reading has
- *         held for LINE_JUNCTION_SAMPLES consecutive samples.
+ * @return true at a junction or a perpendicular bar: each line sensor has
+ *         been dark within the last LINE_JUNCTION_WINDOW_MSEC, together or
+ *         one after the other.
  */
 bool line_is_at_junction (void);
 

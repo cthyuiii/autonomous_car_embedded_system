@@ -47,6 +47,7 @@ typedef struct
 {
     int8_t   direction;          /* +1 forward, -1 reverse, 0 coast */
     uint16_t target_mm_per_sec;
+    uint16_t ramp_mm_per_sec;    /* What the PID chases: rises gradually */
     uint16_t measured_mm_per_sec;
     int32_t  integral;
     int32_t  previous_error;
@@ -82,11 +83,13 @@ static uint32_t       g_target_mm         = 0u;
 static uint32_t       g_progress_milli_mm = 0u;
 static uint32_t       g_distance_milli_mm = 0u;
 static uint16_t       g_move_speed        = 0u;  /* Distance move's speed */
-static int32_t        g_straight_pulses   = 0;   /* Left ahead of right */
+static uint16_t       g_cruise            = 0u;  /* Ramped faster wheel */
+static int32_t        g_straight_pulses   = 0;   /* Left ahead, 1/1000s */
 
 static void         start_move (move_kind_t kind, int8_t left_direction,
                                 int8_t right_direction, uint32_t travel_mm);
 static void         set_wheel (wheel_t * p_wheel, int32_t signed_speed);
+static void         ramp_setpoints (void);
 static uint16_t     wheel_duty (wheel_t * p_wheel);
 static void         update_measurements (void);
 static void         apply_motors (void);
@@ -96,7 +99,8 @@ static void         read_counters (uint32_t * p_left, uint32_t * p_right,
                                    uint32_t * p_interval_right,
                                    uint32_t * p_pulse_left,
                                    uint32_t * p_pulse_right);
-static uint16_t     interval_to_speed (uint32_t interval_usec,
+static uint16_t     interval_to_speed (uint32_t permille,
+                                       uint32_t interval_usec,
                                        uint32_t last_pulse_usec,
                                        uint32_t now_usec);
 static uint32_t     now_usec (void);
@@ -162,6 +166,7 @@ car_status_t motion_tick (void)
         status = CAR_ERR_HARDWARE;
     }
 
+    ramp_setpoints();
     apply_motors();
 
     return status;
@@ -251,6 +256,7 @@ car_status_t motion_stop (void)
 {
     set_wheel(&g_left, 0);
     set_wheel(&g_right, 0);
+    g_cruise            = 0u;
     g_move_kind         = MOVE_NONE;
     g_target_mm         = 0u;
     g_state.b_is_busy   = false;
@@ -307,6 +313,7 @@ static void start_move (move_kind_t kind, int8_t left_direction,
 
     set_wheel(&g_left, speed * left_direction);
     set_wheel(&g_right, speed * right_direction);
+    g_cruise            = 0u;   /* Every move starts from rest */
     g_move_kind         = kind;
     g_target_mm         = travel_mm;
     g_progress_milli_mm = 0u;
@@ -353,13 +360,62 @@ static void set_wheel (wheel_t * p_wheel, int32_t signed_speed)
      * property of the wiring, not of the current command. */
     if (p_wheel->direction != previous_direction)
     {
-        p_wheel->integral       = 0;
-        p_wheel->previous_error = 0;
-        p_wheel->stalled_msec   = 0u;
+        p_wheel->integral        = 0;
+        p_wheel->previous_error  = 0;
+        p_wheel->stalled_msec    = 0u;
     }
 
     /* Cast: magnitude is 0 to MOTION_MAX_SPEED_MM_PER_SEC by now. */
     p_wheel->target_mm_per_sec = (uint16_t)magnitude;
+
+    /* Slowing down is never ramped. */
+    if (p_wheel->ramp_mm_per_sec > p_wheel->target_mm_per_sec)
+    {
+        p_wheel->ramp_mm_per_sec = p_wheel->target_mm_per_sec;
+    }
+}
+
+/**
+ * @brief Move both wheels' setpoints a tick closer to their targets.
+ *
+ * The faster wheel climbs at MOTION_ACCEL_MM_PER_SEC2 and the other keeps
+ * its share of it, so a steer is felt from the first tick. Ramping each
+ * wheel on its own let both climb together from rest, and the car went
+ * straight for the first part of a second whatever it was told to steer.
+ * Slowing down is immediate.
+ */
+static void ramp_setpoints (void)
+{
+    uint32_t const step   = (MOTION_ACCEL_MM_PER_SEC2 * MOTION_TICK_PERIOD_MSEC)
+                            / 1000u;
+    uint32_t const top    = (g_left.target_mm_per_sec
+                             > g_right.target_mm_per_sec)
+                            ? g_left.target_mm_per_sec
+                            : g_right.target_mm_per_sec;
+    uint32_t       cruise = (uint32_t)g_cruise + step;   /* Cast: widening */
+
+    if (cruise > top)
+    {
+        cruise = top;
+    }
+
+    /* Casts: cruise is at most top, a uint16_t, and each share is at most
+     * cruise. */
+    g_cruise = (uint16_t)cruise;
+
+    if (0u == top)
+    {
+        g_left.ramp_mm_per_sec  = 0u;
+        g_right.ramp_mm_per_sec = 0u;
+    }
+    else
+    {
+        /* Casts: each share is at most cruise, so fits a uint16_t. */
+        g_left.ramp_mm_per_sec  = (uint16_t)((g_left.target_mm_per_sec
+                                              * cruise) / top);
+        g_right.ramp_mm_per_sec = (uint16_t)((g_right.target_mm_per_sec
+                                              * cruise) / top);
+    }
 }
 
 /**
@@ -380,11 +436,11 @@ static uint16_t wheel_duty (wheel_t * p_wheel)
     int32_t const min_duty = (int32_t)MOTOR_MIN_DUTY;
     int32_t       duty     = 0;
 
-    if (0u != p_wheel->target_mm_per_sec)
+    if (0u != p_wheel->ramp_mm_per_sec)
     {
         /* Casts: a uint16_t speed times 1000 fits an int32_t, and the
          * divisor is a small positive constant. */
-        duty = ((int32_t)p_wheel->target_mm_per_sec
+        duty = ((int32_t)p_wheel->ramp_mm_per_sec
                 * (int32_t)MOTOR_PWM_MAX_DUTY)
                / (int32_t)MOTION_MAX_SPEED_MM_PER_SEC;
 
@@ -396,7 +452,7 @@ static uint16_t wheel_duty (wheel_t * p_wheel)
         int32_t measured = p_wheel->b_against
                            ? -(int32_t)p_wheel->measured_mm_per_sec
                            : (int32_t)p_wheel->measured_mm_per_sec;
-        int32_t error = (int32_t)p_wheel->target_mm_per_sec - measured;
+        int32_t error = (int32_t)p_wheel->ramp_mm_per_sec - measured;
         int32_t derivative = error - p_wheel->previous_error;
 
         p_wheel->integral += error;
@@ -522,7 +578,8 @@ static uint32_t turn_arc_mm (uint16_t angle_deg)
  *
  * @return Speed in mm per second, 0 if the wheel has stopped pulsing.
  */
-static uint16_t interval_to_speed (uint32_t interval_usec,
+static uint16_t interval_to_speed (uint32_t permille,
+                                   uint32_t interval_usec,
                                    uint32_t last_pulse_usec,
                                    uint32_t now_usec)
 {
@@ -532,8 +589,9 @@ static uint16_t interval_to_speed (uint32_t interval_usec,
     if ((0u != interval_usec)
         && (silent < (ENCODER_STALL_TIMEOUT_MSEC * 1000u)))
     {
-        speed = (WHEEL_CIRCUMFERENCE_MM * 1000000u)
-                / (ENCODER_SLOTS_PER_REV * interval_usec);
+        speed = (((WHEEL_CIRCUMFERENCE_MM * 1000000u)
+                  / (ENCODER_SLOTS_PER_REV * interval_usec)) * permille)
+                / 1000u;
 
         if (speed > (2u * MOTION_MAX_SPEED_MM_PER_SEC))
         {
@@ -565,9 +623,11 @@ static int32_t measure_encoders (void)
 
     read_counters(&left, &right, &interval_left, &interval_right,
                   &pulse_left, &pulse_right);
-    g_left.measured_mm_per_sec  = interval_to_speed(interval_left,
+    g_left.measured_mm_per_sec  = interval_to_speed(WHEEL_LEFT_PERMILLE,
+                                                    interval_left,
                                                     pulse_left, now);
-    g_right.measured_mm_per_sec = interval_to_speed(interval_right,
+    g_right.measured_mm_per_sec = interval_to_speed(WHEEL_RIGHT_PERMILLE,
+                                                    interval_right,
                                                     pulse_right, now);
     g_left.b_ever_pulsed  = g_left.b_ever_pulsed
                             || (left != g_left.last_count);
@@ -588,14 +648,19 @@ static int32_t measure_encoders (void)
     delta_right = g_right.b_against ? -delta_right : delta_right;
     g_left.last_count  = left;
     g_right.last_count = right;
+    /* Each wheel's pulses in its own ground, in thousandths of an average
+     * pulse, so straightening evens out the distances the wheels cover and
+     * the smaller left tyre no longer bends every move left. */
+    delta_left  *= (int32_t)WHEEL_LEFT_PERMILLE;
+    delta_right *= (int32_t)WHEEL_RIGHT_PERMILLE;
     g_straight_pulses += delta_left - delta_right;
     note_stall(&g_left);
     note_stall(&g_right);
 
-    /* Casts: small positive constants. A tick's pulses times the
-     * circumference times 1000 stays far inside int32_t. */
-    return ((delta_left + delta_right) * (int32_t)WHEEL_CIRCUMFERENCE_MM
-            * 1000) / (2 * (int32_t)ENCODER_SLOTS_PER_REV);
+    /* Casts: small positive constants. A tick's weighted pulses times the
+     * circumference stays far inside int32_t. */
+    return ((delta_left + delta_right) * (int32_t)WHEEL_CIRCUMFERENCE_MM)
+           / (2 * (int32_t)ENCODER_SLOTS_PER_REV);
 }
 
 /**
@@ -661,11 +726,12 @@ static void note_direction (volatile bool * p_backward,
 static void straighten (void)
 {
     /* Casts: the speed and constants are small and positive. The pulse
-     * difference is bounded by the move, so the products fit int32_t. */
+     * difference, in thousandths of a pulse, is bounded by the move, so
+     * the products fit int32_t. */
     int32_t limit      = (int32_t)g_move_speed / 2;
     int32_t correction = ((g_straight_pulses * (int32_t)WHEEL_CIRCUMFERENCE_MM)
                           * (int32_t)MOTION_STRAIGHT_KP)
-                         / (int32_t)ENCODER_SLOTS_PER_REV;
+                         / ((int32_t)ENCODER_SLOTS_PER_REV * 1000);
 
     if (g_left.b_ever_pulsed && g_right.b_ever_pulsed)
     {
@@ -749,6 +815,12 @@ void motion_host_get_duty (uint16_t * p_left, uint16_t * p_right)
 {
     *p_left  = g_host_duty_left;
     *p_right = g_host_duty_right;
+}
+
+void motion_host_get_setpoint (uint16_t * p_left, uint16_t * p_right)
+{
+    *p_left  = g_left.ramp_mm_per_sec;
+    *p_right = g_right.ramp_mm_per_sec;
 }
 
 static void hw_init (void)

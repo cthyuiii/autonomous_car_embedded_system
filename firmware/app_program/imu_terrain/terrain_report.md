@@ -8,12 +8,13 @@ deliverable the write-up asks for.
 protractor and a ruler; section 5 is written from those results.
 
 **Live status.** The car publishes its terrain status on `car/terrain`
-every 2 seconds: pitch, whether it is trusted, the vector length,
+every 5 seconds: pitch, whether it is trusted, the vector length,
 roughness, STABLE or ROUGH, the motion event, the hump count, and the last
-and highest hump heights. The keys are listed in `comms/README.md`. Record
-a run with:
+and highest hump heights. Each hump also goes out on `car/event` the
+moment the car comes off it. The keys are listed in `comms/README.md`.
+Record a run with:
 
-    mosquitto_sub -h <broker ip> -t car/terrain -v | tee terrain_log.txt
+    mosquitto_sub -h <broker ip> -t car/terrain -t car/event -v | tee terrain_log.txt
 
 ## 1. What the sensor can and cannot measure
 

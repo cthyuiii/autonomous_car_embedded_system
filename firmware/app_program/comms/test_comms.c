@@ -81,6 +81,20 @@ int main (void)
     assert(CAR_OK == comms_publish_terrain(&telemetry));
     assert(CAR_ERR_RANGE == comms_publish_terrain(NULL));
 
+    /* Every event fits at its widest, and an unknown one is refused. */
+    assert(CAR_OK == comms_publish_event(&telemetry, COMMS_EVENT_ACTION));
+    assert(CAR_OK == comms_publish_event(&telemetry, COMMS_EVENT_BARCODE));
+    assert(CAR_OK == comms_publish_event(&telemetry, COMMS_EVENT_HUMP));
+    assert(CAR_OK == comms_publish_event(&telemetry, COMMS_EVENT_HIT));
+    assert(CAR_OK == comms_publish_event(&telemetry, COMMS_EVENT_OBSTACLE));
+    assert(CAR_ERR_RANGE == comms_publish_event(NULL, COMMS_EVENT_HIT));
+
+    /* The last action has a name, so the table grew with the enum. */
+    telemetry.action = CAR_ACTION_REREADING;
+    assert(CAR_OK == comms_publish_event(&telemetry, COMMS_EVENT_ACTION));
+    assert(CAR_ERR_RANGE
+           == comms_publish_event(&telemetry, (comms_event_t)99));
+
     return 0;
 }
 

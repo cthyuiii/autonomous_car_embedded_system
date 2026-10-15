@@ -92,7 +92,8 @@ typedef enum
     CAR_ACTION_BACKING_OUT,         /* Undoing legs of a blocked lane */
     CAR_ACTION_SEARCHING,           /* Searching for the line */
     CAR_ACTION_BACKING_OFF,         /* After a hit or a stall */
-    CAR_ACTION_HALTED
+    CAR_ACTION_HALTED,
+    CAR_ACTION_REREADING            /* Back over a missed barcode */
 } car_action_t;
 
 /** Result of an ultrasonic scan, all distances in mm from the sensor. */

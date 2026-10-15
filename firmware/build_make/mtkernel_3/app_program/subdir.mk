@@ -71,9 +71,12 @@ OBJS     += $(APP_OBJS)
 C_DEPS   += $(APP_OBJS:.o=.d)
 
 # Warnings apply to our code only. The kernel keeps its own flags.
+# CAR_BENCH tells shared code it is in a bench, see common/car_log.c; the
+# stamp above rebuilds our objects whenever that changes.
+APP_DEFS := $(if $(BENCH),-DCAR_BENCH)
 mtkernel_3/app_program/%.o: ../app_program/%.c
 	@mkdir -p "$(@D)"
 	@echo 'Building file: $<'
-	$(GCC) $(CFLAGS) -Wall -Wextra -D$(TARGET) $(INCPATH) $(APP_INCPATH) -MF"$(@:%.o=%.d)" -MT"$(@)" -c -o "$@" "$<"
+	$(GCC) $(CFLAGS) -Wall -Wextra -D$(TARGET) $(APP_DEFS) $(INCPATH) $(APP_INCPATH) -MF"$(@:%.o=%.d)" -MT"$(@)" -c -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '

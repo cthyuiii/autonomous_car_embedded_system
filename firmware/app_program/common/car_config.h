@@ -94,8 +94,24 @@
  * at the gains below, or a hump that stalls the car halts it instead of
  * being pushed over. TODO: tune with the gains. */
 #define MOTION_STALL_FAULT_MSEC     2000u
-#define WHEEL_CIRCUMFERENCE_MM       188u   // pi x 60 mm, 500 mm drive checked
-#define WHEEL_BASE_MM                110u   // Tyre centres, ~11 cm, 2026-09-25
+/* Ground per wheel turn, the two wheels' average. pi x 60 mm is 188, but
+ * the tuning runs of 2026-10-14 put it at 203 (500 mm drives read 509 on
+ * the encoders, about 550 on the tape) and 207.5 (509 against 520) after
+ * the first correction; between the two. */
+#define WHEEL_CIRCUMFERENCE_MM       205u
+/* Each wheel's share of that, per mille. The left tyre covers less ground
+ * per turn: with the pulse counts matched, 500 mm drives ended 10 to 25 mm
+ * left, pointing about 5 degrees left, about 1.4 percent between the
+ * wheels. The speed loops and the straight-line correction use these, so
+ * both wheels cover the same ground rather than count the same pulses.
+ * Keep the two summing to 2000. */
+#define WHEEL_LEFT_PERMILLE          993u
+#define WHEEL_RIGHT_PERMILLE        1007u
+/* The turning base, the tyre centres measured at about 110 mm. On
+ * 2026-10-14 the earlier runs bracketed it (102 and 114 from turns of
+ * 107.5 and 82 degrees); at 108 turns read 89 on a protractor against
+ * 90.9 on the encoders, so 108 x 90.9 / 89 = 110, the tape value. */
+#define WHEEL_BASE_MM                110u
 
 /* Motion control loop. Gains are in thousandths to avoid floating point,
  * and act once per tick. The car was tuned with KP 500, KI 50, KD 10 and
@@ -114,6 +130,12 @@
  * sensors longer over the line. MOTOR_MIN_DUTY is the floor under it, so
  * if turns stay too quick at a low value, that floor is what to lower. */
 #define MOTION_TURN_SPEED_MM_PER_SEC  60u   // 100 overshot 2.4 to 3.7 deg
+/* Every speed-up is gradual: each wheel's setpoint climbs to its target at
+ * this rate, whatever asked for the speed (a move from rest, the line
+ * follower speeding up, steering, the straight-line correction). Slowing
+ * down and stopping stay immediate. 200 is 0 to 150 mm/s in 0.75 s, asked
+ * for on 2026-10-14 after 600 (0.25 s) already steadied the turns. */
+#define MOTION_ACCEL_MM_PER_SEC2     200u
 /* Straight line correction on distance moves, encoders only. The wheel
  * that has travelled further since the move began is slowed and the other
  * sped up by this many mm/s per mm between them, at most half the move
@@ -156,7 +178,16 @@
  * high, which line_get_health() will show as a sensor that never reads
  * dark. */
 #define LINE_SENSOR_PULL_UP            0u   // 0 pull down, 1 pull up
-#define LINE_JUNCTION_SAMPLES          4u   // Both dark this many, 40 ms
+/* A junction is both line sensors dark, but not necessarily together: a
+ * car meeting the cross a little skewed puts one sensor on it before the
+ * other, so they may overlap for a single sample or not at all. Each one
+ * dark at some point in the last LINE_JUNCTION_WINDOW_MSEC is a junction.
+ * 100 ms is 15 mm at 150 mm/s, so the second sensor may reach the 18 mm
+ * arm up to 33 mm after the first, about a 50 degree skew. Weaving on a
+ * straight line would need to swing about 25 degrees inside 15 mm to
+ * fake one. Raise it if crosses still slip past; lower it if the car stops
+ * where there is no cross. */
+#define LINE_JUNCTION_WINDOW_MSEC    100u
 /* Start-up check in line_calibrate(): the car starts straddling the line,
  * so every sensor must read floor, steadily, for this many samples, one
  * LINE_SAMPLE_PERIOD_MSEC apart. */
@@ -335,7 +366,25 @@
  * move the car's own half width plus the obstacle's, and forward has to
  * carry the whole car past the obstacle before it turns back in. */
 #define SCAN_DETOUR_SIN45_RECIP     1414u   // 1 / sin 45, times 1000
-#define SCAN_DETOUR_MARGIN_MM  ((CAR_WIDTH_MM / 2u) + 50u)  // Half plus slack
+/* How far the car's nose swings sideways turning on the spot: the front
+ * corner, CAR_SENSOR_TO_WHEEL_MM ahead of the wheels and half the width
+ * out, sqrt(150^2 + 75^2) = 168. Beside the obstacle the car turns toward
+ * it to look, so the sideways leg leaves this plus 30 mm, and a look can
+ * never put the nose into it. */
+#define SCAN_NOSE_SWING_MM           170u
+#define SCAN_DETOUR_MARGIN_MM  (SCAN_NOSE_SWING_MM + 30u)
+/* Walking the obstacle's length, which nothing can see from the front.
+ * Out beside it, the car steps SCAN_DETOUR_STEP_MM at a time and at each
+ * step turns SCAN_DETOUR_LOOK_DEG toward it, so the sonar at its
+ * SCAN_HALF_SWEEP_DEG limit meets the side square on: a flat side seen at
+ * an angle sends no echo back. Anything nearer than the line means it is
+ * still there. Once a look is clear the car drives SCAN_DETOUR_PAST_MM on
+ * before turning in, so its back corner clears the obstacle's back corner
+ * on the diagonal home; raise that if it clips the corner. The walk stops
+ * at SCAN_DETOUR_DEPTH_MAX_MM whatever the looks say. */
+#define SCAN_DETOUR_STEP_MM           50u   // 25 worked but crept, 2026-10-14
+#define SCAN_DETOUR_LOOK_DEG  (90u - SCAN_HALF_SWEEP_DEG)   // 65
+#define SCAN_DETOUR_PAST_MM          100u
 /* Fallback legs, used when the fine scan could not measure a width: the
  * same sums with the obstacle taken as a point. The sideways leg is the
  * clearance divided by sin 45, because the car travels it at
@@ -352,6 +401,12 @@
  * car across the room or clip the obstacle. The minima are the fallback
  * legs: nothing measured can justify less room than a point obstacle. */
 #define SCAN_DETOUR_SIDE_MIN_MM      SCAN_DETOUR_SIDE_MM
+/* Narrowest obstacle a detour is planned for. A flat face met at an angle
+ * sends the echo away, so the side readings miss its edges and it reads
+ * narrow: on 2026-10-14 a 210 mm box profiled at 78 mm, the detour went
+ * 164 mm out and met it again. Set it to the widest obstacle on the
+ * course plus a little. */
+#define SCAN_DETOUR_WIDTH_MIN_MM     220u
 #define SCAN_DETOUR_SIDE_MAX_MM      500u
 #define SCAN_DETOUR_DEPTH_MIN_MM     SCAN_DETOUR_DEPTH_MM
 #define SCAN_DETOUR_DEPTH_MAX_MM     600u
@@ -377,11 +432,12 @@
 #define COMMS_TOPIC_HEARTBEAT    "car/heartbeat"
 #define COMMS_TOPIC_COMMAND      "car/command"
 #define COMMS_TOPIC_TERRAIN      "car/terrain"
+#define COMMS_TOPIC_EVENT        "car/event"        // Sent as it happens
 #define COMMS_TOPIC_LOG          "car/log"          // Console mirror
 #define COMMS_WIFI_TIMEOUT_MSEC    30000u
 #define COMMS_MQTT_KEEPALIVE_SECONDS  60u
 #define COMMS_POLL_PERIOD_MSEC        10u
-#define COMMS_HEARTBEAT_PERIOD_MSEC 1000u
+#define COMMS_HEARTBEAT_PERIOD_MSEC 5000u
 #define COMMS_RECONNECT_BACKOFF_MSEC 5000u
 /* Telemetry is the longest payload: 297 bytes on a typical run and 365
  * with every field at its widest, measured on the host. The MQTT ring
@@ -396,8 +452,10 @@
  * proportional correction on the sensor error, expressed in
  * per mille of the set speed handed to motion_drive_steer(). */
 #define CAR_MISSION_PERIOD_MSEC       10u
-#define CAR_TELEMETRY_PERIOD_MSEC    200u
-#define CAR_TERRAIN_PERIOD_MSEC     2000u   // The terrain report's status
+/* Slow enough to read as they arrive. What happens in between goes out
+ * at once on COMMS_TOPIC_EVENT, so a 5 s gap hides nothing. */
+#define CAR_TELEMETRY_PERIOD_MSEC   5000u
+#define CAR_TERRAIN_PERIOD_MSEC     5000u   // The terrain report's status
 #define CAR_FOLLOW_SPEED_MM_PER_SEC  150u   // TODO: raise once following works
 #define CAR_BARCODE_SPEED_MM_PER_SEC 100u   // Slower so every bar is sampled
 /* Terrain speed. Climbing keeps the asked speed: the speed loop adds
@@ -418,6 +476,22 @@
  * the second sensor touches it (reenter_line() in car_main.c). The spin
  * stops on the sensor; this only bounds it if it never sees the line. */
 #define CAR_REENTRY_SPIN_MAX_DEG     120u
+/* 1 to test the re-entry by hand: the car starts off the line, pointed at
+ * it at the angle to try, its sensors within 150 mm of it, and the first
+ * touch is handled as a re-entry. 0 for runs, where the car starts on the
+ * line and the first touch is a drift for the normal law. */
+#define CAR_REENTRY_TEST               0u
+/* 1 to test barcodes and junctions on their own: the sonar is never used,
+ * so hands, walls and boxes near the course cannot stop the car, and it
+ * only follows the line, reads barcodes and turns. 0 for runs. */
+#define CAR_BARCODE_TEST               0u
+/* How long the car waits at the start for the broker, so a run is reported
+ * from its first metre: it stays still until its first telemetry is sent,
+ * then drives. With no broker after this long it drives anyway, so a dead
+ * network cannot stop a run. 0 drives at once; builds without the radio
+ * never wait. Benches built with --wifi wait the same way at their first
+ * console line, see car_log.c. */
+#define CAR_BROKER_WAIT_MSEC       60000u
 #define CAR_STEER_LOST_PERMILLE      900    // Applied toward the last seen side
 #define CAR_LINE_SEEN_SAMPLES         40u   // Ticks seen before speeding up
 #define CAR_LINE_LOST_STRAIGHT_MM    200u   // Gap plus barcode plus margin
@@ -448,17 +522,47 @@
  * turns as the last barcode read since the previous junction said, or
  * goes straight on if none was read. */
 #define CAR_JUNCTION_WAIT_MSEC       500u   // Stopped, waiting for a command
-/* Forward from where the car stops at a junction to where its wheels, the
- * point it spins about, sit over the crossing. The sensors are at the
- * front, so turning where they first see the junction would leave the car
- * beside the new branch instead of on it. U-turns do not creep. Coming
- * back onto the line uses it as the sensor to wheel distance too.
- * Measured sensor eye to tyre centres, about 150 mm. At a junction the car
- * also coasts a little past where it saw the crossing: if left and right
- * turns land past the new branch, take that coast off this. */
-#define CAR_JUNCTION_CREEP_MM        150u
+/* Sensor eye to tyre centres, measured, about 150 mm: the point the car
+ * spins about is this far behind where the sensors see the line. */
+#define CAR_SENSOR_TO_WHEEL_MM       150u
+/* Forward from where the car stops at a junction to where its wheels sit
+ * over the crossing, so a turn lands on the new branch. That is
+ * CAR_SENSOR_TO_WHEEL_MM less the coast from stopping: on 2026-10-14 a
+ * 150 mm creep pivoted the car about 50 mm past the cross, and the new
+ * branch was only found at 106 degrees. U-turns do not creep. */
+#define CAR_JUNCTION_CREEP_MM        100u
+/* A junction with nothing read since the last one: every junction has a
+ * barcode just before it, so the side sensor missed it. The car backs up
+ * at CAR_REREAD_SPEED_MM_PER_SEC, reading as it goes, until a barcode is
+ * read, or the barcode sensor has seen bars and then CAR_REREAD_CLEAR_MM
+ * of plain floor, or it has gone CAR_REREAD_MAX_MM. Then it follows the
+ * line back to the junction at the same speed, reading again, once per
+ * junction; with still nothing read it goes straight on. A barcode read
+ * earlier is held for the junction as before and skips all this. The
+ * first CAR_REREAD_CLEAR_MM are not watched, as the sensor starts over
+ * the crossing's arm. It never backs up further than it has driven since
+ * the start or the last junction, which keeps it on line it has covered
+ * and is where any barcode it missed must be. CAR_REREAD_MAX_MM must reach
+ * past the far end of the barcode furthest from its junction; 0 turns the
+ * reread off. At 60 mm/s a wide bar lasts 150 ms, well inside
+ * BARCODE_MAX_ELEMENT_MSEC. */
+#define CAR_REREAD_MAX_MM            600u
+#define CAR_REREAD_CLEAR_MM           50u   // Plain floor that ends a barcode
+#define CAR_REREAD_SPEED_MM_PER_SEC   60u
 #define CAR_SONAR_CHECK_PERIOD_MSEC   60u   // Forward ping while following
-#define CAR_UTURN_DEG                180u
+/* Junction turns end on the line, not on the encoders: on 2026-10-14 a
+ * 90 degree turn by the encoders measured 105 to 110 on a protractor, and
+ * the car pivoted off centre. The car spins up to CAR_TURN_MAX_DEG and
+ * stops when the line sensor on the side it turns toward has crossed the
+ * new branch, so the line ends between the two sensors, looking only from
+ * CAR_TURN_SENSE_FROM_DEG so the branch it is leaving does not count. A
+ * U-turn looks from CAR_UTURN_SENSE_FROM_DEG for the line it came in on,
+ * up to CAR_UTURN_MAX_DEG. With nothing found by the end, line following
+ * looks for it. */
+#define CAR_TURN_MAX_DEG             120u
+#define CAR_TURN_SENSE_FROM_DEG       60u
+#define CAR_UTURN_MAX_DEG            210u
+#define CAR_UTURN_SENSE_FROM_DEG     150u
 
 /* Logging threshold, matches car_log_level_t: 0 error, 1 info, 2 debug. */
 #define CAR_LOG_LEVEL                  1

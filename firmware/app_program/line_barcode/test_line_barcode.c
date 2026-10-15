@@ -27,6 +27,8 @@
 #define TEST_GROUP             9u   /* Elements per character */
 #define TEST_MASK_BARCODE    0x02u
 #define TEST_HOLD_USEC     (LINE_CENTRED_HOLD_MSEC * 1000u)
+#define TEST_JUNCTION_USEC (LINE_JUNCTION_WINDOW_MSEC * 1000u)
+#define TEST_DRIFT_SAMPLES   10u   /* One sensor dark, 100 ms of it */
 
 /* Wide element flags for '*', 'A', '*', nine per character, MSB first.
  * A is Left in the course write-up's barcode table. */
@@ -36,6 +38,7 @@ static uint16_t const g_test_symbol[TEST_CHARACTERS] =
 };
 
 static uint32_t          test_barcode (void);
+static void              test_junction (void);
 static void              build_symbol (uint32_t * p_widths);
 static car_nav_command_t cross_symbol (uint32_t const * p_widths,
                                        uint32_t * p_now_usec);
@@ -47,7 +50,6 @@ int main (void)
     car_nav_command_t command = CAR_NAV_NONE;
     uint8_t           health  = 0u;
     uint32_t          now     = 0u;
-    uint8_t           index   = 0u;
 
     assert(CAR_OK == line_init());
     assert(CAR_OK == line_calibrate());
@@ -94,18 +96,7 @@ int main (void)
     assert(CAR_OK == line_get_health(&health));
     assert(0x07u == health);
 
-    /* A junction is both line sensors dark, and needs the reading to hold.
-     * The barcode sensor plays no part in it. */
-    line_host_inject(0x05u, 0u);
-
-    for (index = 1u; index < LINE_JUNCTION_SAMPLES; index++)
-    {
-        assert(CAR_OK == line_get_position(&error));
-        assert(false == line_is_at_junction());
-    }
-
-    assert(CAR_OK == line_get_position(&error));
-    assert(true == line_is_at_junction());
+    test_junction();
 
     now = test_barcode();
 
@@ -119,6 +110,57 @@ int main (void)
     assert(CAR_OK == line_calibrate());
 
     return 0;
+}
+
+/**
+ * @brief A junction is each line sensor dark within LINE_JUNCTION_WINDOW_MSEC,
+ *        together or one after the other.
+ */
+static void test_junction (void)
+{
+    int16_t  error = 0;
+    uint8_t  index = 0u;
+    uint32_t now   = 10u * TEST_HOLD_USEC;   /* Earlier sightings stale */
+
+    /* Both together, as on a square crossing. The barcode sensor plays
+     * no part in it. */
+    line_host_inject(0x05u, now);
+    assert(CAR_OK == line_get_position(&error));
+    assert(true == line_is_at_junction());
+
+    /* It lasts the window after the last both-dark sighting, then ends. */
+    now += TEST_JUNCTION_USEC;
+    line_host_inject(0x00u, now);
+    (void)line_get_position(&error);
+    assert(false == line_is_at_junction());
+
+    /* Skewed: left on the arm, then right 60 ms later, never together. */
+    now += 10u * TEST_JUNCTION_USEC;
+    line_host_inject(0x01u, now);
+    assert(CAR_OK == line_get_position(&error));
+    assert(false == line_is_at_junction());
+    line_host_inject(0x00u, now + 30000u);
+    (void)line_get_position(&error);
+    line_host_inject(0x04u, now + 60000u);
+    assert(CAR_OK == line_get_position(&error));
+    assert(true == line_is_at_junction());
+
+    /* Too far apart is weaving, not a cross. */
+    now += 10u * TEST_JUNCTION_USEC;
+    line_host_inject(0x01u, now);
+    (void)line_get_position(&error);
+    line_host_inject(0x04u, now + TEST_JUNCTION_USEC + 50000u);
+    (void)line_get_position(&error);
+    assert(false == line_is_at_junction());
+
+    /* One sensor alone, however long, is a drift. */
+    for (index = 0u; index < TEST_DRIFT_SAMPLES; index++)
+    {
+        line_host_inject(0x04u, now + TEST_JUNCTION_USEC + (index * 10000u));
+        (void)line_get_position(&error);
+    }
+
+    assert(false == line_is_at_junction());
 }
 
 /**

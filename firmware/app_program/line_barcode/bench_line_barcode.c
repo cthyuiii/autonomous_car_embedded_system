@@ -3,6 +3,14 @@
  * @brief Streams the sensor mask, the health of each sensor, and the
  *        position error, then prints any barcode it decodes.
  *
+ * To read a paper barcode: put the car on the line with the barcode beside
+ * it on the left, 20 mm from the line's edge, and push the car along at a
+ * steady walk so the barcode sensor passes over every bar. Each symbol
+ * prints as `barcode A, command 1`: 1 left, 2 right, 3 straight, 4 u-turn,
+ * and 0 for a letter the course does not use. Push faster than about 2 cm a
+ * second; a bar or gap that lasts over BARCODE_MAX_ELEMENT_MSEC resets the
+ * decoder.
+ *
  * Build and flash with `./flash.sh line_barcode`, the three IR modules
  * attached. Slide the car sideways across the line by hand: the mask, which
  * prints right, barcode, left, should walk 001, 000, 100 and the error -2,
@@ -40,6 +48,7 @@
 #define BENCH_SENSORS         3u
 
 static uint8_t  g_last_raw   = 0u;
+static uint16_t g_barcodes   = 0u;   // Symbols already printed
 static uint32_t g_changes[BENCH_SENSORS] = { 0u, 0u, 0u };
 
 static char health_letter (uint8_t health, uint8_t bit, char letter);
@@ -70,6 +79,8 @@ INT usermain (void)
         uint8_t           health  = 0u;
         uint8_t           raw     = 0u;
         car_nav_command_t command = CAR_NAV_NONE;
+        char              symbol  = '\0';
+        uint16_t          count   = 0u;
 
         (void)line_get_position(&error);
         (void)line_get_sensor_mask(&mask);
@@ -96,9 +107,16 @@ INT usermain (void)
             g_last_raw = raw;
         }
 
-        if (CAR_OK == line_poll_barcode(&command))
+        /* Every symbol decoded, not only the four commands, so a misread
+         * shows up as the letter it was taken for. */
+        (void)line_poll_barcode(&command);
+        (void)line_get_last_barcode(&symbol, &count);
+
+        if (count != g_barcodes)
         {
-            CAR_LOG(CAR_LOG_INFO, "barcode command %d\n", command);
+            CAR_LOG(CAR_LOG_INFO, "barcode %c, command %d\n", symbol,
+                    command);
+            g_barcodes = count;
         }
 
         if (0u == (sample_count % BENCH_PRINT_EVERY))

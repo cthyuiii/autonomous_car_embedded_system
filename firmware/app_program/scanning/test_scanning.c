@@ -27,6 +27,7 @@ static void test_servo_band (void);
 static void test_wall_and_plan (void);
 static void test_recovery (void);
 static void test_detour (void);
+static void test_walk (void);
 
 int main (void)
 {
@@ -231,6 +232,49 @@ static void test_detour (void)
     assert(CAR_OK == scan_detour_get_leg(3u, CAR_AVOID_LEFT, false,
                                          &action, &amount));
     assert(SCAN_DETOUR_DEPTH_MAX_MM == amount);
+
+    test_walk();
+}
+
+/**
+ * @brief Walking the obstacle's length: a near echo is the obstacle still
+ *        beside the car, a far one is clear, the look points toward the
+ *        obstacle, and the distance walked replaces the planned leg.
+ */
+static void test_walk (void)
+{
+    car_obstacle_profile_t profile  = { 0 };
+    car_avoid_action_t     action   = CAR_AVOID_STOP;
+    uint16_t               amount   = 0u;
+    uint16_t               angle    = 0u;
+    uint16_t               pulse    = 0u;
+    bool                   b_beside = false;
+
+    profile.width_mm = 220u;
+    assert(CAR_OK == scan_detour_plan(&profile));
+
+    /* Round the left, the obstacle is on the right: look right. */
+    scan_host_inject_range(60u);
+    assert(CAR_OK == scan_detour_beside(CAR_AVOID_LEFT, &b_beside));
+    assert(b_beside);
+    scan_host_get_servo(&angle, &pulse);
+    assert(SCAN_MIN_ANGLE_DEG == angle);
+
+    scan_host_inject_range(SONAR_MAX_RANGE_MM);
+    assert(CAR_OK == scan_detour_beside(CAR_AVOID_LEFT, &b_beside));
+    assert(!b_beside);
+    assert(CAR_OK == scan_detour_beside(CAR_AVOID_RIGHT, &b_beside));
+    scan_host_get_servo(&angle, &pulse);
+    assert(SCAN_MAX_ANGLE_DEG == angle);
+
+    assert(CAR_ERR_RANGE == scan_detour_beside(CAR_AVOID_CONTINUE, &b_beside));
+    assert(CAR_ERR_RANGE == scan_detour_beside(CAR_AVOID_LEFT, NULL));
+
+    assert(CAR_OK == scan_detour_set_along(275u));
+    assert(CAR_OK == scan_detour_get_leg(SCAN_DETOUR_ALONG_LEG,
+                                         CAR_AVOID_LEFT, true, &action,
+                                         &amount));
+    assert((CAR_AVOID_REVERSE == action) && (275u == amount));
 }
 
 /*** end of file ***/

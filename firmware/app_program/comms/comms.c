@@ -46,13 +46,13 @@
 #define COMMS_TOPIC_MAX_BYTES 32u
 
 /* Names published for car_action_t and car_motion_event_t, in order. */
-static char const * const g_action_names[CAR_ACTION_HALTED + 1u] =
+static char const * const g_action_names[CAR_ACTION_REREADING + 1u] =
 {
     "starting", "following line", "turning onto line", "line lost",
     "reading barcode", "stopped at junction", "turning left",
     "turning right", "u-turn", "scanning obstacle", "going round obstacle",
     "reversing to probe", "backing out of lane", "searching for line",
-    "backing off after hit", "halted"
+    "backing off after hit", "halted", "rereading barcode"
 };
 static char const * const g_event_names[CAR_MOTION_IMPACT + 1u] =
 {
@@ -70,6 +70,8 @@ static uint16_t                g_host_length       = 0u;
 static uint16_t          format_telemetry (car_telemetry_t const * p_telemetry);
 static uint16_t          format_heartbeat (void);
 static uint16_t          format_terrain (car_telemetry_t const * p_telemetry);
+static uint16_t          format_event (car_telemetry_t const * p_telemetry,
+                                       comms_event_t event);
 static uint16_t          fitted (int32_t written);
 static char const *      action_name (car_action_t action);
 static char const *      event_name (car_motion_event_t event);
@@ -203,6 +205,19 @@ car_status_t comms_publish_terrain (car_telemetry_t const * p_telemetry)
     if (NULL != p_telemetry)
     {
         status = send(COMMS_TOPIC_TERRAIN, format_terrain(p_telemetry));
+    }
+
+    return status;
+}
+
+car_status_t comms_publish_event (car_telemetry_t const * p_telemetry,
+                                  comms_event_t event)
+{
+    car_status_t status = CAR_ERR_RANGE;
+
+    if ((NULL != p_telemetry) && (event <= COMMS_EVENT_OBSTACLE))
+    {
+        status = send(COMMS_TOPIC_EVENT, format_event(p_telemetry, event));
     }
 
     return status;
@@ -422,6 +437,79 @@ static uint16_t format_terrain (car_telemetry_t const * p_telemetry)
 }
 
 /**
+ * @brief Write one event as a JSON object into g_payload.
+ *
+ * Keys are documented in comms/README.md.
+ *
+ * @param[in] p_telemetry Snapshot taken after the event.
+ * @param[in] event       What happened.
+ *
+ * @return Bytes written, 0 if it did not fit.
+ */
+static uint16_t format_event (car_telemetry_t const * p_telemetry,
+                              comms_event_t event)
+{
+    char const     barcode[2] = { p_telemetry->last_barcode, '\0' };
+    uint32_t const dist       = p_telemetry->total_distance_mm;
+    int32_t        written    = 0;
+
+    switch (event)
+    {
+        case COMMS_EVENT_ACTION:
+            written = COMMS_FORMAT(
+                "{\"type\":\"action\",\"action\":\"%s\",\"dist\":%u}",
+                action_name(p_telemetry->action), dist);
+        break;
+
+        case COMMS_EVENT_BARCODE:
+            /* Casts: each value becomes the 32 bit type its %u or %d
+             * reads, which holds every value of the narrower field. */
+            written = COMMS_FORMAT(
+                "{\"type\":\"barcode\",\"code\":\"%s\",\"count\":%u,"
+                "\"dist\":%u}",
+                barcode, (uint32_t)p_telemetry->barcode_count, dist);
+        break;
+
+        case COMMS_EVENT_HUMP:
+            /* Casts: each value becomes the 32 bit type its %u or %d
+             * reads, which holds every value of the narrower field. */
+            written = COMMS_FORMAT(
+                "{\"type\":\"hump\",\"mm\":%u,\"peak_mm\":%u,\"count\":%u,"
+                "\"dist\":%u}",
+                (uint32_t)p_telemetry->last_hump_height_mm,
+                (uint32_t)p_telemetry->peak_hump_height_mm,
+                (uint32_t)p_telemetry->hump_count, dist);
+        break;
+
+        case COMMS_EVENT_HIT:
+            written = COMMS_FORMAT("{\"type\":\"hit\",\"dist\":%u}", dist);
+        break;
+
+        case COMMS_EVENT_OBSTACLE:
+            /* Casts: each value becomes the 32 bit type its %u or %d
+             * reads, which holds every value of the narrower field. */
+            written = COMMS_FORMAT(
+                "{\"type\":\"obstacle\",\"found\":%u,\"bearing\":%d,"
+                "\"range\":%u,\"width\":%u,\"left\":%u,\"right\":%u,"
+                "\"dist\":%u}",
+                (uint32_t)p_telemetry->last_obstacle.b_is_valid,
+                (int32_t)p_telemetry->last_obstacle.bearing_deg,
+                (uint32_t)p_telemetry->last_obstacle.closest_range_mm,
+                (uint32_t)p_telemetry->last_obstacle.width_mm,
+                (uint32_t)p_telemetry->last_obstacle.clearance_left_mm,
+                (uint32_t)p_telemetry->last_obstacle.clearance_right_mm,
+                dist);
+        break;
+
+        default:
+            /* Refused by comms_publish_event(); nothing is written. */
+        break;
+    }
+
+    return fitted(written);
+}
+
+/**
  * @brief Turn a formatter's result into a length to send.
  *
  * @param[in] written What the formatter returned.
@@ -451,7 +539,7 @@ static uint16_t fitted (int32_t written)
  */
 static char const * action_name (car_action_t action)
 {
-    return (action <= CAR_ACTION_HALTED) ? g_action_names[action]
+    return (action <= CAR_ACTION_REREADING) ? g_action_names[action]
                                          : "unknown";
 }
 

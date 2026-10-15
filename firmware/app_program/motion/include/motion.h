@@ -172,6 +172,15 @@ void motion_host_inject_pulses (uint32_t left, uint32_t right,
  * @param[out] p_right Right motor duty.
  */
 void motion_host_get_duty (uint16_t * p_left, uint16_t * p_right);
+
+/**
+ * @brief Host test hook: the speed each wheel's PID is chasing right now,
+ *        which climbs to the target at MOTION_ACCEL_MM_PER_SEC2.
+ *
+ * @param[out] p_left  Left wheel setpoint, mm/s.
+ * @param[out] p_right Right wheel setpoint, mm/s.
+ */
+void motion_host_get_setpoint (uint16_t * p_left, uint16_t * p_right);
 #endif
 
 #endif /* MOTION_H */

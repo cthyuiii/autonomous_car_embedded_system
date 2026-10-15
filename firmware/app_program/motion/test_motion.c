@@ -20,12 +20,29 @@
 static void test_api (void);
 static void test_phase_b (void);
 static void test_straight_line (void);
+static void test_wheel_shares (void);
+static void test_ramp (void);
+static void test_steer_from_rest (void);
+static void settle (void);
+
+/* One tick's rise of a wheel setpoint, and a speed it reaches in two. */
+#define TEST_RAMP_STEP   ((MOTION_ACCEL_MM_PER_SEC2 * MOTION_TICK_PERIOD_MSEC) \
+                          / 1000u)
+/* Straight moves are tested slowly, so the climb from rest settles well
+ * inside MOTION_STALL_FAULT_MSEC of a quiet wheel. Enough ticks to reach
+ * the fastest target: the speed plus half of it from the correction. */
+#define TEST_SPEED_MM_PER_SEC   60u
+#define TEST_SETTLE_TICKS \
+    ((((TEST_SPEED_MM_PER_SEC * 3u) / 2u) / TEST_RAMP_STEP) + 2u)
 
 int main (void)
 {
     test_api();
     test_phase_b();
     test_straight_line();
+    test_wheel_shares();
+    test_ramp();
+    test_steer_from_rest();
 
     return 0;
 }
@@ -91,27 +108,129 @@ static void test_phase_b (void)
 
 /**
  * @brief The wheel that gets ahead on a straight move is slowed and the
- *        other sped up, whichever of the two it is.
+ *        other sped up, whichever of the two it is. Read from the
+ *        setpoints once the climb from rest has settled.
  */
 static void test_straight_line (void)
 {
-    uint16_t duty_left  = 0u;
-    uint16_t duty_right = 0u;
+    uint16_t left  = 0u;
+    uint16_t right = 0u;
 
     /* A tick while stopped takes in any pulses injected before, as the
      * motion task's steady ticking does on the car. */
     assert(CAR_OK == motion_stop());
     assert(CAR_OK == motion_tick());
+    assert(CAR_OK == motion_set_speed(TEST_SPEED_MM_PER_SEC));
     assert(CAR_OK == motion_move_forward(1000u));
     motion_host_inject_pulses(40u, 10u, false, false);
-    assert(CAR_OK == motion_tick());
-    motion_host_get_duty(&duty_left, &duty_right);
-    assert(duty_left < duty_right);
+    settle();
+    motion_host_get_setpoint(&left, &right);
+    assert(left < right);
 
     motion_host_inject_pulses(0u, 60u, false, false);
+    settle();
+    motion_host_get_setpoint(&left, &right);
+    assert(left > right);
+    assert(CAR_OK == motion_set_speed(MOTION_DEFAULT_SPEED_MM_PER_SEC));
+}
+
+/**
+ * @brief Equal pulse counts are not equal ground when the tyres differ:
+ *        the wheel with the larger WHEEL_*_PERMILLE share covers more per
+ *        pulse, reads faster at the same pulse rate, and counts as ahead,
+ *        so the other wheel is asked for more.
+ */
+static void test_wheel_shares (void)
+{
+    uint16_t       left  = 0u;
+    uint16_t       right = 0u;
+    motion_state_t state = { 0 };
+
+    assert(CAR_OK == motion_stop());
     assert(CAR_OK == motion_tick());
-    motion_host_get_duty(&duty_left, &duty_right);
-    assert(duty_left > duty_right);
+    assert(CAR_OK == motion_set_speed(TEST_SPEED_MM_PER_SEC));
+    assert(CAR_OK == motion_move_forward(1000u));
+    motion_host_inject_pulses(200u, 200u, false, false);
+    assert(CAR_OK == motion_tick());
+    assert(CAR_OK == motion_get_state(&state));
+    settle();
+    motion_host_get_setpoint(&left, &right);
+
+#if WHEEL_LEFT_PERMILLE < WHEEL_RIGHT_PERMILLE
+    assert(state.left_mm_per_sec < state.right_mm_per_sec);
+    assert(left > right);
+#elif WHEEL_LEFT_PERMILLE > WHEEL_RIGHT_PERMILLE
+    assert(state.left_mm_per_sec > state.right_mm_per_sec);
+    assert(left < right);
+#else
+    assert(state.left_mm_per_sec == state.right_mm_per_sec);
+#endif
+
+    assert(CAR_OK == motion_stop());
+    assert(CAR_OK == motion_set_speed(MOTION_DEFAULT_SPEED_MM_PER_SEC));
+}
+
+/**
+ * @brief Tick until a setpoint climbing from rest has reached any target a
+ *        straight move can ask for.
+ */
+static void settle (void)
+{
+    uint8_t tick = 0u;
+
+    for (tick = 0u; tick < TEST_SETTLE_TICKS; tick++)
+    {
+        (void)motion_tick();
+    }
+}
+
+/**
+ * @brief Every speed-up is gradual and every slow-down immediate: from
+ *        rest the setpoints climb one TEST_RAMP_STEP a tick, and a stop
+ *        drops them to zero at once.
+ */
+static void test_ramp (void)
+{
+    uint16_t left  = 0u;
+    uint16_t right = 0u;
+
+    assert(CAR_OK == motion_stop());
+    assert(CAR_OK == motion_tick());
+    assert(CAR_OK == motion_set_speed(MOTION_DEFAULT_SPEED_MM_PER_SEC));
+    assert(CAR_OK == motion_move_forward(1000u));
+    motion_host_get_setpoint(&left, &right);
+    assert((0u == left) && (0u == right));
+
+    assert(CAR_OK == motion_tick());
+    motion_host_get_setpoint(&left, &right);
+    assert((TEST_RAMP_STEP == left) && (TEST_RAMP_STEP == right));
+
+    assert(CAR_OK == motion_tick());
+    motion_host_get_setpoint(&left, &right);
+    assert((2u * TEST_RAMP_STEP) == left);
+
+    assert(CAR_OK == motion_stop());
+    motion_host_get_setpoint(&left, &right);
+    assert((0u == left) && (0u == right));
+}
+
+/**
+ * @brief A steer from rest is felt from the first tick: the outer wheel
+ *        climbs and the inner keeps its share, rather than both climbing
+ *        together while the car goes straight.
+ */
+static void test_steer_from_rest (void)
+{
+    uint16_t left  = 0u;
+    uint16_t right = 0u;
+
+    assert(CAR_OK == motion_stop());
+    assert(CAR_OK == motion_tick());
+    assert(CAR_OK == motion_drive_steer(300));
+    assert(CAR_OK == motion_tick());
+    motion_host_get_setpoint(&left, &right);
+    assert(left > right);
+    assert(CAR_OK == motion_stop());
 }
 
 /*** end of file ***/

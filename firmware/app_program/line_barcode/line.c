@@ -79,7 +79,11 @@ static uint8_t  g_sensor_mask      = 0u;
 static uint8_t  g_raw_levels       = 0u;
 static uint8_t  g_seen_dark        = 0u;
 static uint8_t  g_seen_light       = 0u;
-static uint8_t  g_junction_samples = 0u;
+static uint32_t g_left_dark_usec   = 0u;    // Last sample each was dark
+static uint32_t g_right_dark_usec  = 0u;
+static bool     gb_left_dark_seen  = false; // Since line_init()
+static bool     gb_right_dark_seen = false;
+static bool     gb_junction        = false;
 static bool     gb_touched         = false;
 static uint32_t g_touch_usec       = 0u;
 static run_t    g_runs[BARCODE_RUNS_MAX];
@@ -112,7 +116,9 @@ car_status_t line_init (void)
     g_sensor_mask      = 0u;
     g_seen_dark        = 0u;
     g_seen_light       = 0u;
-    g_junction_samples = 0u;
+    gb_left_dark_seen  = false;
+    gb_right_dark_seen = false;
+    gb_junction        = false;
     gb_touched         = false;
     g_run_count        = 0u;
     gb_run_started      = false;
@@ -194,18 +200,25 @@ car_status_t line_get_position (int16_t * p_error)
 
         g_sensor_mask = mask;
 
-        if (LINE_BITS_LINE != line)
+        /* Each sensor's last dark sample, so a skewed crossing that puts
+         * them on the arm one after the other still counts. */
+        if (0u != (line & LINE_BIT_LEFT))
         {
-            g_junction_samples = 0u;
+            gb_left_dark_seen = true;
+            g_left_dark_usec  = now;
         }
-        else if (g_junction_samples < LINE_JUNCTION_SAMPLES)
+
+        if (0u != (line & LINE_BIT_RIGHT))
         {
-            g_junction_samples++;
+            gb_right_dark_seen = true;
+            g_right_dark_usec  = now;
         }
-        else
-        {
-            /* Held at the limit while the junction lasts. */
-        }
+
+        gb_junction = gb_left_dark_seen && gb_right_dark_seen
+                      && ((now - g_left_dark_usec)
+                          < (LINE_JUNCTION_WINDOW_MSEC * 1000u))
+                      && ((now - g_right_dark_usec)
+                          < (LINE_JUNCTION_WINDOW_MSEC * 1000u));
 
         if (0u != line)
         {
@@ -265,7 +278,7 @@ car_status_t line_get_sensor_mask (uint8_t * p_mask)
 
 bool line_is_at_junction (void)
 {
-    return (g_junction_samples >= LINE_JUNCTION_SAMPLES);
+    return gb_junction;
 }
 
 car_status_t line_poll_barcode (car_nav_command_t * p_command)

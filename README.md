@@ -9,7 +9,8 @@ one per person.
 
 `firmware/` is the kernel port, vendored from
 [sirfonzie/mtk3smp-rp2040](https://github.com/sirfonzie/mtk3smp-rp2040)
-under its own licences (see `firmware/LICENSE` and `firmware/LICENSES/`).
+at commit 2e8e6ad, the Raspberry Pi Pico port listed in the course template
+[sirfonzie/mtk3-hub](https://github.com/sirfonzie/mtk3-hub), under its own licences (see `firmware/LICENSE` and `firmware/LICENSES/`).
 Everything of ours lives in `firmware/app_program/`. Do not edit the kernel
 tree except the places listed under Kernel notes.
 
@@ -59,23 +60,33 @@ subsystem names.
 | Capability | State on the car |
 |---|---|
 | Motors over PWM: forward, reverse, turn on the spot | Working |
-| Encoders, both phases, speed control | Working: 639 pulses and 188 mm per wheel turn |
-| Straight line correction on distance moves | Built and host tested, not yet run on the car |
-| Line following, two sensors straddling the line | Working, still being tuned |
-| Back onto the line after a detour or search: cross, creep, turn on the spot | Steep re-entries crossed the line on the car; the spin now stops at the first touch, rerun |
-| Stop at a junction, then turn as the barcode says | Built, not yet run on the car |
-| Barcode decoding, Code 39 A, B, C, D | Built and host tested, not yet run on the car |
+| Encoders, both phases, speed control | Working: 639 pulses and 205 mm per wheel turn, left tyre 993 and right 1007 per mille of that (tuning runs, 2026-10-14) |
+| Straight line correction on distance moves | Working: 500 mm drives land 500 to 515 mm, straight (2026-10-14) |
+| Line following, two sensors straddling the line | Working; speed-ups ramp at 200 mm/s², and a centred car no longer slows |
+| Back onto the line after a detour or search: cross, creep, turn on the spot | Working up to 90 degrees (`CAR_REENTRY_TEST`, 2026-10-14) |
+| Stop at a junction, then turn as the barcode says | Working on the course (2026-10-14); creep cut to 100 mm after a 50 mm overshoot, to rerun |
+| Barcode decoding, Code 39 A, B, C, D | Working: all four on the bench, A on the course; a missed barcode is reread by backing up |
 | Tilt from the IMU | Working |
 | Hump detection, count and heights | Built and host tested, not yet run over a hump |
-| Control loops every 10 ms, woken by the kernel tick | Built, not yet run on the car; the tuning bench prints the rate |
-| Current action and terrain status over MQTT | Built and host tested, not yet run on the car |
-| Collision from the IMU | Threshold never yet triggered on the car |
+| Control loops every 10 ms, woken by the kernel tick | Working: 9 ms measured |
+| Current action and terrain status over MQTT | Working, shown on the dashboard |
+| Collision from the IMU | Working: hits reported in any state and acted on |
 | Stuck detection: a wheel driven but not turning | Built, not yet run on the car |
 | Servo and ultrasonic ranging at 3.3 V | Working |
-| Obstacle profile and box detour | Worked on the old detour bench without encoders; rerun, the bench now drives the car's own legs |
+| Obstacle profile and box detour | Runs; flat boxes profile narrow, so detours plan for at least 220 mm. The length is walked with a look every 50 mm: a 220 by 195 mm box cleared on the bench (2026-10-14, at 25 mm) |
 | Search for the line after a bypass | Built, not yet proven on a full run |
 | Wi-Fi telemetry, heartbeat and remote commands | Working end to end |
 | Hardware layer on the Pico C SDK (`common/car_hw.c`) | Register for register the same as the kernel BSP calls it replaced; rerun every bench |
+
+**Resources**, which the write-up asks to be used prudently (WiFi car
+build, 2026-10-15):
+
+| Resource | Used |
+|---|---|
+| Flash | 348 KB of 2 MB (17 %) |
+| RAM, static | 65 KB of 264 KB (25 %), task stacks 4 KB each |
+| Processing | control loops every 10 ms tick, 9 ms measured; the radio on its own task |
+| Radio | telemetry, terrain and heartbeat every 5 s, about 0.1 KB/s, plus events as they happen |
 
 The `TODO:` comments left in the code mark values still to be measured or
 confirmed on the car.
@@ -87,8 +98,14 @@ confirmed on the car.
   between encoder pulses. Phase B gives the direction, and a reversal only
   counts once 4 pulses in a row agree. Distance moves also hold their
   heading (`MOTION_STRAIGHT_KP`). Turns on the spot run at
-  `MOTION_TURN_SPEED_MM_PER_SEC`. Both encoders are required: a wheel
-  whose encoder never pulses reads zero speed and is driven hard.
+  `MOTION_TURN_SPEED_MM_PER_SEC`. Every speed-up is gradual: the faster wheel's
+  setpoint climbs at `MOTION_ACCEL_MM_PER_SEC2` (200, so 0 to 150 mm/s in
+  0.75 s) and the other wheel keeps its share, so steering works from rest;
+  slowing and stopping are immediate. Each wheel has its own
+  share of the circumference (`WHEEL_LEFT_PERMILLE`, `WHEEL_RIGHT_PERMILLE`),
+  so the car runs straight on ground, not on pulse counts. Both encoders are
+  required: a wheel whose encoder never pulses reads zero speed and is
+  driven hard.
 - **line_barcode** reads three MH-Sensor-Series modules as a 3 bit mask.
   Left (Grove 5) and right (Grove 2) straddle the line and steer. The
   third (Grove 6) sits off to the left, beside the line, and only reads
@@ -102,22 +119,43 @@ confirmed on the car.
 - **scanning** runs the HC-SR04 at 3.3 V from Grove 4, with no echo
   divider, and the servo on S1 across 65 to 115 degrees.
 - **comms** publishes JSON over MQTT through a phase on the kernel's radio
-  task, only in the `WIFI_MQTT=1` build: telemetry on `car/telemetry`
-  every 200 ms, including what the car is doing as text (`action`), and
-  the terrain status on `car/terrain` every 2 s. `comms/README.md` lists
-  every key. Without the radio build the controller logs the radio as
+  task, only in the `WIFI_MQTT=1` build: telemetry on `car/telemetry`,
+  including what the car is doing as text (`action`), the terrain status
+  on `car/terrain` and a heartbeat, each every 5 s. Anything that happens
+  in between, such as a hit, a hump, a barcode, an obstacle scan or a new
+  action, goes out at once on `car/event`. `comms/README.md` lists every
+  key. Without the radio build the controller logs the radio as
   absent and drives anyway.
 - **car_main** calibrates before starting the tasks, then follows the line,
   stops at every junction, drives a box detour round an obstacle, and
-  searches for the line afterwards.
+  searches for the line afterwards. In the radio build it first stands still
+  until the broker has its first telemetry, so the run is reported from the
+  start; with no broker after `CAR_BROKER_WAIT_MSEC` (60 s) it drives anyway.
+  Start the broker and the dashboard before switching the car on.
 
 **Barcodes and junctions.** The Code 39 characters that carry each command
 (`BARCODE_CHAR_*`) follow the write-up's table: A Left, B Right, C
 Straight, D U-turn. The line is 18 mm wide. Each barcode is 141 mm long
 and sits along the track, beside the line on the left, 20 mm from its
 edge. Junctions are crosses, so a junction puts the line under both line
-sensors at once. A barcode is held until the next cross, however far
-away; a later barcode replaces an earlier one.
+sensors: at once when the car meets it square, one just after the other
+when it meets it skewed. Each sensor dark within the last
+`LINE_JUNCTION_WINDOW_MSEC` (100 ms) counts, so a skewed cross that only
+darkens both for an instant is not missed. A barcode is held until the next cross, however far
+away; a later barcode replaces an earlier one. Every junction has a barcode
+just before it, so a junction reached with nothing read means the side
+sensor missed it: the car backs up at 60 mm/s, reading as it goes, until it
+reads the barcode or the barcode sensor has passed its bars and 50 mm of
+plain floor (600 mm at most, `CAR_REREAD_MAX_MM`), then follows the line
+back to the junction just as slowly, once per junction. With still nothing
+read it goes straight on, so no distance needs measuring.
+
+To test barcodes and junctions on their own, set `CAR_BARCODE_TEST` to 1
+in `car_config.h`: the sonar is never used, so hands, walls and boxes near
+the course cannot stop the car. Set it back to 0 for runs; the console says
+so at start-up while it is on. Benches built with `--wifi` wait for the
+broker before they start, like the car, so the dashboard sees them from
+their first line.
 - **At the junction:** the car stops for `CAR_JUNCTION_WAIT_MSEC`, taking
   any command that arrives in that time.
 - **A or B:** it creeps `CAR_JUNCTION_CREEP_MM`, so its wheels sit over
@@ -147,6 +185,13 @@ out of it ends in `RECOVER_LINE`, which the write-up requires.
 - **Ending early:** it ends as soon as the line reappears after leg
   `CAR_DETOUR_PAST_INDEX`, and a leg that pings blocked is abandoned and
   replanned.
+- **Walking the length:** the sonar sees only the obstacle's front, so
+  once beside it the car steps along `SCAN_DETOUR_STEP_MM` (50 mm) at a
+  time and turns `SCAN_DETOUR_LOOK_DEG` (65°) toward it at each step to
+  look. With the sonar at its 25° limit, that meets the side square on. While
+  something is nearer than the line it steps on; once clear it drives
+  `SCAN_DETOUR_PAST_MM` (100 mm) more and turns in. The sideways leg leaves
+  room for the nose to swing when it turns to look (`SCAN_NOSE_SWING_MM`).
 - **Giving up:** `CAR_MAX_DETOUR_ATTEMPTS` limits how often the car goes
   round the same obstacle before it reverses instead. The count clears
   only after `CAR_DETOUR_CLEAR_MM` of following with nothing ahead.
@@ -207,7 +252,17 @@ For the radio and MQTT:
 1. Copy `firmware/config/wifi_credentials.example.h` to
    `wifi_credentials.h` and fill it in. Git ignores the copy.
 2. Set `COMMS_MQTT_BROKER_HOST` in `car_config.h`.
-3. Build:
+3. Start the broker on the laptop in a terminal of its own and leave it
+   open. Mosquitto 2 listens only to the laptop itself unless told
+   otherwise, and the Pico W has no login, so save these two lines as
+   `~/mosquitto-car.conf`:
+
+       listener 1883 0.0.0.0
+       allow_anonymous true
+
+   then run `mosquitto -c ~/mosquitto-car.conf -v`. Don't use `brew
+   services` for the car: it reads a different config file.
+4. Build:
 
        make CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 \
             WIFI_MQTT=1 -j8
@@ -558,7 +613,22 @@ mosquitto_pub -h <broker ip> -t car/command -m L
 ```
 
 The broker's own `-v` log prints protocol lines and byte counts, never
-payloads, so use `mosquitto_sub` to see the contents.
+payloads, so use `mosquitto_sub` to see the contents. `python3
+firmware/watch.py` shows the same messages one block each, every key named
+with its unit and events marked `>>>`.
+
+For a cleaner view, `python3 firmware/dashboard.py` opens a live page at
+http://127.0.0.1:8765: the state, the last command and the link at the top,
+every telemetry figure in one table, a timing diagram of the action, line
+sensors, speed and pitch with events marked on it, the obstacle profile, the
+terrain and hump table, the console log, and L, R, S, U buttons. A hit turns
+the latest-event box red. Every message is kept in `firmware/runs/<date>.jsonl`
+(not committed), and Export by date downloads a day as a zip of CSV files
+for the reports. It needs no internet. Start the broker first; `watch.py`
+stays as the terminal fallback and can run beside it. Point at the timing
+diagram to read what the car was doing at that moment, which is how to read
+an action too short to be labelled. When a bench is running instead of the
+car, the page says which and shows its console across the middle.
 
 ### `line_barcode`
 
@@ -743,17 +813,20 @@ is actually used has not been measured.
 
 | Topic | Size | Rate | Data |
 |---|---|---|---|
-| `car/telemetry` | 297 bytes typical, 365 at most | every 200 ms | about 1.5 KB/s |
-| `car/terrain` | 124 bytes typical, 144 at most | every 2 s | under 0.1 KB/s |
-| `car/heartbeat` | about 45 bytes | every second | about 0.05 KB/s |
+| `car/telemetry` | 297 bytes typical, 365 at most | every 5 s | about 0.06 KB/s |
+| `car/terrain` | 124 bytes typical, 144 at most | every 5 s | under 0.03 KB/s |
+| `car/heartbeat` | about 45 bytes | every 5 s | about 0.01 KB/s |
+| `car/event` | 27 to 101 bytes typical, 117 at most | as it happens | a few a second at most, during a detour |
 | `car/log` | whole console lines, up to 480 bytes a message | as printed | a few lines a second at most |
 
 - Messages go at QoS 0 with no resends: a lost telemetry message is
-  replaced by the next one 200 ms later, so nothing out of date is sent
-  twice.
+  replaced by the next one 5 s later, so nothing out of date is sent
+  twice. An event is held until it is queued, so one made while the
+  broker is away is still sent.
 - The control tasks never wait on the radio. A message is copied into
   the send ring and the radio task sends it.
-- `CAR_TELEMETRY_PERIOD_MSEC` sets the largest share of the traffic.
+- `CAR_TELEMETRY_PERIOD_MSEC` sets the largest share of the steady
+  traffic. Events cost nothing while nothing happens.
 
 **Power**
 - A stopped motor gets no power at all.

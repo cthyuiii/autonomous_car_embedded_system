@@ -99,28 +99,35 @@ Record every change in section 3, with the bench rows before and after it.
 | 2026-09-26 | Duty bench: start 90 ‰, keep turning to 70 ‰, 35 mm/s at 100 ‰ | `MOTOR_MIN_DUTY` 150 → 70 |
 | 2026-09-26 | Third run, with the pin level check and the floor at 70: left matches right at 100 and 200 mm/s (overshoot 4 to 5 %, ripple 8 to 14); left still noisy at 300 only (351 %, ripple 1097); 180 glitches in the step test, none during the 200 mm/s drives. Turns 92.4 to 93.7° | Kept; the car never asks for 300 |
 | 2026-09-26 | Fourth run, turn speed 60: turns 90.8 to 92.4° in about 1.75 s | `MOTION_TURN_SPEED_MM_PER_SEC` 100 → 60 |
+| 2026-10-14 | Fifth run, the first measured by hand. Drives read 508 to 510 mm on the encoders and about 550 mm on the tape, ending about 10 mm left. The 2026-09-25 cut to 188 had matched the tape while the left encoder still added spurious pulses, which the 2026-09-26 filter now throws away | `WHEEL_CIRCUMFERENCE_MM` 188 → 203 (188 × 550 / 509) |
+| 2026-10-14 | Same run: turns read 90.7 to 92.4° on the encoders and 105 to 110° on a protractor, and the car pivoted off centre | `WHEEL_BASE_MM` 110 → 101 (91.4 × 203 / 188 = 98.7, × 110 / 107.5). Junction turns now stop when the leading line sensor reaches the new branch, so their angle no longer rests on the encoders |
+| 2026-10-14 | Sixth run, with 203 and 101: drives 520 mm on the tape against 508 to 509 on the encoders, ending 10 to 25 mm left and pointing about 5° left; turns about 82°. Worked in pulses, so each run's calibration cancels out: the circumference comes to 203 and 207.5, the turning base to 102 and 114 | `WHEEL_CIRCUMFERENCE_MM` 203 → 205 and `WHEEL_BASE_MM` 101 → 108, between the two runs |
+| 2026-10-14 | Same run: the encoder heading read 0.0 to +0.3° while the car turned about 5° left over 500 mm, so equal pulse counts are not equal ground: the left tyre covers about 1.4 % less per turn | Per-wheel shares `WHEEL_LEFT_PERMILLE` 993 and `WHEEL_RIGHT_PERMILLE` 1007, used by both speed loops and the straight-line correction |
+| 2026-10-14 | Seventh run, with 205, 108 and the shares: drives 500 to 515 mm on the tape against 509 to 510 on the encoders, small sideways deviation, car facing along the tape; turns about 89° | Distance and straightness kept. `WHEEL_BASE_MM` 108 → 110 (90.9 / 89), which is the tyre centres measured with a ruler |
 
 ## 4. Step response results
 
 Paste part 1 of the bench output below. Firmware under test: gains as in
 section 1.
 
-Fourth run, 2026-09-26: `MOTOR_MIN_DUTY` 70, turn speed 60.
+Fifth run, 2026-10-14: `MOTOR_MIN_DUTY` 70, turn speed 60, circumference
+still 188 (the run that set it to 203).
 
 | Target mm/s | Wheel | Rise 10-90% ms | Overshoot % | Steady error mm/s | Ripple mm/s |
 |---|---|---|---|---|---|
-| 100 | left | 50 | 4 | -1 | 8 |
-| 100 | right | 80 | 5 | 0 | 8 |
-| 200 | left | 60 | 4 | 0 | 14 |
+| 100 | left | 70 | 5 | 0 | 8 |
+| 100 | right | 70 | 4 | 0 | 7 |
+| 200 | left | 70 | 4 | -1 | 13 |
 | 200 | right | 60 | 4 | 0 | 14 |
-| 300 | left | 50 | 178 | 2 | 410 |
-| 300 | right | 60 | 4 | 1 | 19 |
+| 300 | left | 80 | 433 | 9 | 1348 |
+| 300 | right | 70 | 4 | 0 | 21 |
 
 **Loop period** (printed after the table): 9 ms, the tick wake-up
 working (20 would mean it is not).
 
-**Encoder noise:** left 166 glitches thrown away in the step test, right
-0; neither wheel reversed.
+**Encoder noise:** left 203 glitches thrown away in the step test, right
+3; none reversed. The fourth run (2026-09-26) gave the same picture: left
+166, right 0, left overshoot 178 % at 300.
 
 **Reading:** every row meets the section 2 targets (rise under 300 ms,
 overshoot under 15 %, steady error within 5 %, ripple under 20 %) except
@@ -145,34 +152,93 @@ noise it has thrown away after the step test and after the drives.
 The encoder columns are what the car believes. The tape column is the
 truth. The gap between them is the accuracy being evaluated.
 
-**Distance, asked 500 mm at 200 mm/s** (fourth run; the tape columns are measured by hand)
+**Distance, asked 500 mm at 200 mm/s** (fifth run, 2026-10-14, with the
+circumference at 188). The three drives were measured as one figure, so
+each tape cell holds that average; single runs were not recorded.
 
 | Run | Asked mm | Encoders mm | Heading deg, + right | Time ms | Tape mm | Sideways mm, + right |
 |---|---|---|---|---|---|---|
-| drive 1 | 500 | 509 | +0.0 | 2610 | | |
-| drive 2 | 500 | 509 | -0.1 | 2610 | | |
-| drive 3 | 500 | 510 | -0.4 | 2610 | | |
+| drive 1 | 500 | 509 | +0.3 | 2620 | ≈ 550 | ≈ −10 |
+| drive 2 | 500 | 509 | +0.1 | 2620 | ≈ 550 | ≈ −10 |
+| drive 3 | 500 | 510 | +0.6 | 2620 | ≈ 550 | ≈ −10 |
 
-**Turns, asked 90° at 60 mm/s**
+**Turns, asked 90° at 60 mm/s** (same run). Measured as a range for all
+six.
 
 | Run | Asked deg | Encoders deg | Time ms | Protractor deg |
 |---|---|---|---|---|
-| left 1 | 90 | 91.4 | 1770 | |
-| left 2 | 90 | 90.8 | 1740 | |
-| left 3 | 90 | 91.3 | 1770 | |
-| right 1 | 90 | 92.4 | 1740 | |
-| right 2 | 90 | 91.0 | 1750 | |
-| right 3 | 90 | | | |
+| left 1 | 90 | 92.4 | 1980 | 105 to 110 |
+| left 2 | 90 | 91.0 | 2030 | 105 to 110 |
+| left 3 | 90 | 91.4 | 1980 | 105 to 110 |
+| right 1 | 90 | 91.9 | 1950 | 105 to 110 |
+| right 2 | 90 | 90.7 | 1960 | 105 to 110 |
+| right 3 | 90 | 91.0 | 1980 | 105 to 110 |
 
-**Summary** (from the tape columns):
+**Summary** (fifth run, before the corrections it led to):
 
 | Measure | Result | How |
 |---|---|---|
-| Distance error | ___ % | mean of (tape − 500) / 500 |
-| Distance repeatability | ± ___ mm | half the spread of the tape column |
-| Sideways drift over 500 mm | ___ mm | measured off the tape line |
-| Turn error, left / right | ___ / ___ ° | mean of (protractor − 90) |
-| Turn repeatability | ± ___ ° | half the spread |
+| Distance error | about +10 % | (550 − 500) / 500 |
+| Distance repeatability | not recorded | runs measured as one figure |
+| Sideways drift over 500 mm | about 10 mm left | measured off the tape line |
+| Turn error, left / right | about +15 to +20 ° both ways | protractor − 90 |
+| Turn repeatability | not recorded | runs measured as one range |
+
+**Sixth run, 2026-10-14**, with `WHEEL_CIRCUMFERENCE_MM` 203 and
+`WHEEL_BASE_MM` 101. Again measured as one figure for the drives and one
+for the turns.
+
+| Run | Asked mm | Encoders mm | Heading deg, + right | Time ms | Tape mm | Sideways mm, + right |
+|---|---|---|---|---|---|---|
+| drive 1 | 500 | 509 | +0.3 | 2590 | ≈ 520 | −10 to −25 |
+| drive 2 | 500 | 508 | +0.0 | 2590 | ≈ 520 | −10 to −25 |
+| drive 3 | 500 | 509 | +0.1 | 2590 | ≈ 520 | −10 to −25 |
+
+The car also ended pointing about 5° left of the tape.
+
+| Run | Asked deg | Encoders deg | Time ms | Protractor deg |
+|---|---|---|---|---|
+| left 1 | 90 | 91.5 | 1830 | ≈ 82 |
+| left 2 | 90 | 91.5 | 1870 | ≈ 82 |
+| left 3 | 90 | 90.8 | 1800 | ≈ 82 |
+| right 1 | 90 | 91.9 | 1810 | ≈ 82 |
+| right 2 | 90 | 91.1 | 1830 | ≈ 82 |
+| right 3 | 90 | not in the export | | |
+
+The two runs bracket the true values from either side (550 then 520 mm,
+107.5 then 82°), which is what set 205 and 108.
+
+**Seventh run, 2026-10-14**, with `WHEEL_CIRCUMFERENCE_MM` 205,
+`WHEEL_BASE_MM` 108 and the per-wheel shares 993 / 1007.
+
+| Run | Asked mm | Encoders mm | Heading deg, + right | Time ms | Tape mm | Sideways mm, + right |
+|---|---|---|---|---|---|---|
+| drive 1 | 500 | 509 | +0.1 | 2580 | 500 to 515 | small |
+| drive 2 | 500 | 510 | +0.0 | 2580 | 500 to 515 | small |
+| drive 3 | 500 | 509 | +0.0 | 2580 | 500 to 515 | small |
+
+| Run | Asked deg | Encoders deg | Time ms | Protractor deg |
+|---|---|---|---|---|
+| left 1 | 90 | 91.4 | 1910 | ≈ 89 |
+| left 2 | 90 | 90.4 | 1900 | ≈ 89 |
+| left 3 | 90 | 90.7 | 1910 | ≈ 89 |
+| right 1 | 90 | 91.7 | 1860 | ≈ 89 |
+| right 2 | 90 | 90.4 | 1870 | ≈ 89 |
+| right 3 | 90 | not in the export | | |
+
+**Summary, seventh run:**
+
+| Measure | Result | How |
+|---|---|---|
+| Distance error | about +1.5 % (500 to 515 mm) | tape against 500 |
+| Distance repeatability | ± 7.5 mm | half the spread of the tape range |
+| Sideways drift over 500 mm | small, car facing along the tape | by eye, down from 10 to 25 mm and 5° in the sixth run |
+| Turn error, left / right | about −1 ° both ways | protractor − 90 |
+| Turn repeatability | not recorded | turns measured as one figure |
+
+The turn shortfall set `WHEEL_BASE_MM` to 110. Junction turns end on the
+line sensor, so this only shapes the detour's 45° legs and how far a spin
+goes; an eighth run with a protractor would confirm it.
 
 **Corrections these numbers drive:**
 

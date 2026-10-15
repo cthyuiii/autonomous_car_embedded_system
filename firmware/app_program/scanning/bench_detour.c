@@ -51,6 +51,7 @@
 #define BENCH_STARTUP_MSEC     3000u
 #define BENCH_SPEED_MM_PER_SEC  120u
 #define BENCH_SETTLE_MSEC       500u
+#define BENCH_STRAIGHT_MM      3000u   /* One straight move, renewed */
 
 static uint16_t const g_angles_deg[SCAN_COARSE_ANGLE_COUNT] =
     SCAN_COARSE_ANGLES_DEG;
@@ -64,6 +65,8 @@ static void report_angles (void);
 static bool run_detour (car_avoid_action_t side);
 static void retrace (car_avoid_action_t side, uint8_t driven);
 static void drive_leg (uint8_t index, car_avoid_action_t side, bool b_undo);
+static void walk_along (car_avoid_action_t side);
+static void turn_and_wait (car_avoid_action_t way, uint16_t angle_deg);
 
 INT usermain (void)
 {
@@ -230,11 +233,20 @@ static void wait_for_move (void)
 }
 
 /**
- * @brief Keep the wheels turning straight ahead for one kernel tick.
+ * @brief Keep going straight ahead for one kernel tick.
+ *
+ * NOTE: As a long distance move, so the straight-line correction holds the
+ * heading. A steered drive with no steer holds nothing, and on 2026-10-14
+ * it wandered a long way left between obstacles. The sonar stops the move
+ * when something is ahead.
  */
 static void drive_straight (void)
 {
-    (void)motion_drive_steer(0);
+    if (!motion_is_busy())
+    {
+        (void)motion_move_forward(BENCH_STRAIGHT_MM);
+    }
+
     (void)motion_tick();
     car_time_wait_tick();
 }
@@ -381,7 +393,14 @@ static bool run_detour (car_avoid_action_t side)
             break;
         }
 
-        drive_leg(index, side, false);
+        if (SCAN_DETOUR_ALONG_LEG == index)
+        {
+            walk_along(side);
+        }
+        else
+        {
+            drive_leg(index, side, false);
+        }
     }
 
     if (b_done)
@@ -390,6 +409,65 @@ static bool run_detour (car_avoid_action_t side)
     }
 
     return b_done;
+}
+
+/**
+ * @brief Walk the obstacle's length as the car does: turn to look, turn
+ *        back, step on, until a look is clear, then drive past it.
+ *
+ * @param[in] side The way round, CAR_AVOID_LEFT or CAR_AVOID_RIGHT.
+ */
+static void walk_along (car_avoid_action_t side)
+{
+    car_avoid_action_t const toward   = (CAR_AVOID_LEFT == side)
+                                        ? CAR_AVOID_RIGHT : CAR_AVOID_LEFT;
+    uint16_t                 along    = 0u;
+    bool                     b_beside = true;
+
+    CAR_LOG(CAR_LOG_INFO, "  leg %u/%u  along, looking every %u mm\n",
+            SCAN_DETOUR_ALONG_LEG + 1u, SCAN_DETOUR_LEGS,
+            SCAN_DETOUR_STEP_MM);
+
+    while (b_beside)
+    {
+        turn_and_wait(toward, SCAN_DETOUR_LOOK_DEG);
+        (void)scan_detour_beside(side, &b_beside);
+        turn_and_wait(side, SCAN_DETOUR_LOOK_DEG);
+        b_beside = b_beside && (along < SCAN_DETOUR_DEPTH_MAX_MM);
+
+        if (b_beside)
+        {
+            (void)motion_move_forward(SCAN_DETOUR_STEP_MM);
+            wait_for_move();
+            along += SCAN_DETOUR_STEP_MM;
+        }
+    }
+
+    CAR_LOG(CAR_LOG_INFO, "  passed after %u mm, %u more\n", along,
+            SCAN_DETOUR_PAST_MM);
+    (void)motion_move_forward(SCAN_DETOUR_PAST_MM);
+    wait_for_move();
+    (void)scan_detour_set_along(along + SCAN_DETOUR_PAST_MM);
+}
+
+/**
+ * @brief Turn on the spot and wait for it to finish.
+ *
+ * @param[in] way       CAR_AVOID_LEFT or CAR_AVOID_RIGHT.
+ * @param[in] angle_deg How far.
+ */
+static void turn_and_wait (car_avoid_action_t way, uint16_t angle_deg)
+{
+    if (CAR_AVOID_LEFT == way)
+    {
+        (void)motion_turn_left(angle_deg);
+    }
+    else
+    {
+        (void)motion_turn_right(angle_deg);
+    }
+
+    wait_for_move();
 }
 
 /*** end of file ***/
