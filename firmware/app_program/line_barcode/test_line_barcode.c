@@ -31,7 +31,7 @@
 #define TEST_DRIFT_SAMPLES   10u   /* One sensor dark, 100 ms of it */
 
 /* Wide element flags for '*', 'A', '*', nine per character, MSB first.
- * A is Left in the course write-up's barcode table. */
+ * A means turn left. */
 static uint16_t const g_test_symbol[TEST_CHARACTERS] =
 {
     0x094u, 0x109u, 0x094u

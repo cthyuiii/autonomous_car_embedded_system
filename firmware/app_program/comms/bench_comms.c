@@ -19,7 +19,7 @@
  * same for their commands.
  *
  * Owner: Buddy 1, WiFi communication, command and telemetry. Extend it as you
- * need; nothing else depends on it.
+ * need. Nothing else depends on it.
  */
 
 #include <stdint.h>

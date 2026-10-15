@@ -5,14 +5,14 @@
  *
  * Build the car or any bench with --wifi, then record the run from a
  * laptop. A bench holds at its first line until the broker is up, so a run
- * off the cable is watched from the start; the car waits for it later, in
+ * off the cable is watched from the start. The car waits for it later, in
  * car_main.c, once it has calibrated:
  *
  *     mosquitto_sub -h <broker ip> -t car/log | tee run.txt
  *
  * NOTE: Nothing waits for the radio. Lines are held while Wi-Fi joins or
  * the broker is away, and sent in order once it is back, up to
- * LWIP_UTK_MQTT_LOG_BYTES of them; a line that does not fit is lost and
+ * LWIP_UTK_MQTT_LOG_BYTES of them. A line that does not fit is lost and
  * counted. Start the subscriber first: a line only reaches subscribers
  * that are listening when it is sent.
  *
@@ -100,7 +100,7 @@ void car_log_end (INT length)
  *
  * NOTE: The radio service joins and connects by itself once comms_init()
  * has told it where the broker is, so this only watches. Lines are held
- * for the broker either way; this is so a bench that moves the car does
+ * for the broker either way. This is so a bench that moves the car does
  * not start before the dashboard can see it.
  */
 static void wait_for_broker (void)

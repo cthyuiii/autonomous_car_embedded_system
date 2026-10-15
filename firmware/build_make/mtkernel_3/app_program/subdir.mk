@@ -5,7 +5,7 @@
 # compiled, except bench_*.c and test_*.c. `make BENCH=motion` swaps
 # car_main.c for motion/bench_motion.c so one subsystem can be flashed alone.
 # The image keeps the kernel's name (mtk3pico_smp0_usb_cdc.uf2), so the last
-# build wins; flash straight after building.
+# build wins. Flash straight after building.
 ################################################################################
 
 APP_SRCS := $(wildcard ../app_program/*.c ../app_program/*/*.c)
@@ -25,7 +25,7 @@ endif
 # Switching between the car and a bench changes the object list but
 # touches no source, and make only compares timestamps,
 # so it would happily reuse the previous objects and flash the wrong
-# program. A stamp records which selection the objects were built from; when
+# program. A stamp records which selection the objects were built from. When
 # it differs our objects and the image go, so both rules run again. Only our
 # objects, never this file or the kernel's, so it costs a few seconds.
 APP_SELECTED := mtkernel_3/app_program/.selected_$(if $(BENCH),$(BENCH),car)
@@ -71,7 +71,7 @@ OBJS     += $(APP_OBJS)
 C_DEPS   += $(APP_OBJS:.o=.d)
 
 # Warnings apply to our code only. The kernel keeps its own flags.
-# CAR_BENCH tells shared code it is in a bench, see common/car_log.c; the
+# CAR_BENCH tells shared code it is in a bench, see common/car_log.c. The
 # stamp above rebuilds our objects whenever that changes.
 APP_DEFS := $(if $(BENCH),-DCAR_BENCH)
 mtkernel_3/app_program/%.o: ../app_program/%.c

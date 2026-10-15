@@ -2,37 +2,36 @@
 
 Owner: Buddy 4, IMU based motion and terrain monitoring.
 
-Owns the LSM303DLHC, tilt, hump detection and peak height, motion event
-classification, collision detection and turn rate. API is
-`include/imu.h`. Knobs are `IMU_*` in `common/car_config.h`.
-Read the header first: this part has no gyroscope, which shapes everything.
+Owns the LSM303DLHC, tilt, hump detection and peak height, motion events,
+collision detection and turn rate. The API is in `include/imu.h`, the
+values are `IMU_*` in `common/car_config.h`. The part has no gyroscope,
+which shapes everything here.
 
-Implemented. Pitch comes from the gravity vector relative to the level
-reference taken at boot, and is **frozen whenever that vector is not one
-g**. An accelerometer cannot tell a tilt from a push, so a running motor
-would otherwise swing pitch by several degrees on a level car. The bench
-prints `mag`, the vector length in milli g, and `ok`, which is 1 while
-`mag` is within `IMU_PITCH_TRUST_BAND_MILLI_G` of 1000. Motor running,
-`mag` moving and `ok 0` is correct behaviour.
+**Pitch** comes from the gravity vector relative to a level reference
+taken at boot, and is frozen whenever that vector is not 1 g. An
+accelerometer cannot tell a tilt from a push, so a running motor would
+otherwise swing pitch by several degrees on a level car. The bench prints
+`mag`, the vector length in milli g, and `ok`, which is 1 while `mag` is
+within `IMU_PITCH_TRUST_BAND_MILLI_G` of 1000.
 
-Heading is the horizontal magnetometer angle with a hard iron offset
-tracked from running extremes, so it settles after the first full turn. Hump height integrates sin(pitch) over distance the
-controller feeds in from the motion snapshot. Turn rate comes from the
-wheel speed difference. The bus
-is moved from the driver's default GP8 and GP9 to Grove 3 at init.
+**Heading** is the horizontal magnetometer angle with a hard iron offset
+tracked from the running extremes, so it settles after the first full
+turn.
 
-Done means `test_imu_terrain.c` passes on the host, `bench_imu_terrain`
-tracks hand tilt within 2 degrees, and the peak height of the course hump
-is reported within 5 mm of a ruler measurement on three runs.
+**Hump height** adds sin(pitch) over the ground distance from motion.
+**Turn rate** comes from the wheel speed difference. The I2C bus moves from
+the driver's default GP8 and GP9 to Grove 3 at init.
 
-| Calibration                    | Measured | How                         |
-|--------------------------------|----------|-----------------------------|
-| IMU_PITCH_SIGN                 |          | nose up must read positive  |
-| Heading shift from motors, deg |          | stationary, motors on vs off|
-| Heading direction              |          | turn right, heading must rise|
-| Hump pitch threshold, deg      |          | lowest hump on the course   |
-| Collision threshold, milli g   |          | tap the bumper, read event  |
+Tests: `test_imu_terrain.c` on the host, `./flash.sh imu_terrain` on the
+car.
 
-`terrain_report.md` is the terrain analysis report the write-up asks for:
-how each quantity is worked out, the tuning history, and the measurement
-tables to fill in from this bench.
+| Calibration                     | Value | How                                  |
+|---------------------------------|-------|--------------------------------------|
+| IMU_FORWARD_AXIS                | 1     | the module is turned 90 degrees      |
+| IMU_PITCH_SIGN                  | 1     | nose up reads positive               |
+| IMU_PITCH_TRUST_BAND_MILLI_G    | 300   | the mast mount shakes                |
+| IMU_HUMP_PITCH_THRESHOLD_DEG    | 5     | tilt to the hump's angle             |
+| IMU_COLLISION_THRESHOLD_MILLI_G | 600   | tap the bumper and watch `jolt`      |
+
+`terrain_report.md` is the terrain analysis report: how each quantity is
+worked out and what the bench measured.

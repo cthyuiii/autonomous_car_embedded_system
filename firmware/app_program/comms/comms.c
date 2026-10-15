@@ -395,7 +395,7 @@ static uint16_t format_telemetry (car_telemetry_t const * p_telemetry)
  */
 static uint16_t format_heartbeat (void)
 {
-    /* Casts: to the 32 bit type %u reads; the values fit it. */
+    /* Casts: to the 32 bit type %u reads. The values fit it. */
     int32_t written = COMMS_FORMAT(
         "{\"uptime_ms\":%u,\"connected\":%u,\"sessions\":%u}",
         (uint32_t)uptime_msec(), (uint32_t)gb_connected, g_sessions);
@@ -502,7 +502,7 @@ static uint16_t format_event (car_telemetry_t const * p_telemetry,
         break;
 
         default:
-            /* Refused by comms_publish_event(); nothing is written. */
+            /* Refused by comms_publish_event(). Nothing is written. */
         break;
     }
 

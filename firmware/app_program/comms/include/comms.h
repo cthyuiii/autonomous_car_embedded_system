@@ -2,7 +2,7 @@
  *
  * @brief WiFi bring up, MQTT publish and subscribe, heartbeat and recovery.
  *
- * All calls are non blocking. Call comms_poll() from the main loop; it owns
+ * All calls are non blocking. Call comms_poll() from the main loop. It owns
  * reconnection, so the rest of the firmware never waits on the network.
  * Topic names and timeouts are the COMMS_* constants in car_config.h.
  *

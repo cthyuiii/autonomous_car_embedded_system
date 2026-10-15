@@ -31,9 +31,13 @@
 #define TEST_SHAKE_DEN          2
 #define TEST_HUMP_SHAKE_NUM     7   /* 7/5 of one g: past the flat band, */
 #define TEST_HUMP_SHAKE_DEN     5   /* inside the hump band */
+#define TEST_RAMP_TICKS        75u   /* 0 to 150 mm/s in 0.75 s */
+#define TEST_RAMP_STEP          2    /* mm/s a tick at 200 mm/s^2 */
+#define TEST_HOLD_TICKS        60u   /* Ring plus hold, with room */
 
 static void     test_own_gravity (void);
 static void     test_knock (void);
+static uint32_t test_pull_away (uint32_t distance_mm);
 static uint32_t test_second_hump (uint32_t distance_mm);
 static uint32_t test_bridged_hump (uint32_t distance_mm);
 static uint32_t test_curving_hump (uint32_t distance_mm);
@@ -121,7 +125,8 @@ int main (void)
     test_knock();
     distance_mm = test_second_hump(distance_mm);
     distance_mm = test_bridged_hump(distance_mm);
-    (void)test_curving_hump(distance_mm);
+    distance_mm = test_curving_hump(distance_mm);
+    (void)test_pull_away(distance_mm);
     test_own_gravity();
 
     return 0;
@@ -155,7 +160,7 @@ static void test_knock (void)
     assert(0u == jolt_mg);
 
     /* An 800 mg knock from the side lengthens the vector by only about
-     * 280 mg, which the old length test missed; the jolt is the full 800. */
+     * 280 mg, which the old length test missed. The jolt is the full 800. */
     imu_host_inject(0, 0, 1000, 300, 0, 0);
     settle();
     (void)imu_is_collision_detected();
@@ -318,6 +323,52 @@ static void inject_forward (int32_t forward_mg, int32_t up_mg)
     imu_host_inject((0u == IMU_FORWARD_AXIS) ? forward : 0,
                     (1u == IMU_FORWARD_AXIS) ? forward : 0,
                     upward, 300, 0, 0);
+}
+
+/**
+ * @brief The car's own pull-away reads as accelerating from the wheels,
+ *        though the accelerometer barely moves, and a steady speed does
+ *        not.
+ *
+ * @param[in] distance_mm Odometry so far.
+ *
+ * @return Odometry afterwards.
+ */
+static uint32_t test_pull_away (uint32_t distance_mm)
+{
+    car_motion_event_t event = CAR_MOTION_STATIONARY;
+    uint32_t           index = 0u;
+    int16_t            speed = 0;
+
+    inject_forward(0, 1000);
+    settle();
+    assert(CAR_OK == imu_get_event(&event));
+    assert(CAR_MOTION_STATIONARY == event);
+
+    /* 0 to 150 mm/s at MOTION_ACCEL_MM_PER_SEC2, 2 mm/s a tick. */
+    for (index = 0u; index < TEST_RAMP_TICKS; index++)
+    {
+        speed = (int16_t)(speed + TEST_RAMP_STEP);   /* Cast: under 160 */
+        distance_mm += 1u;
+        assert(CAR_OK == imu_feed_odometry(distance_mm, speed, speed));
+        assert(CAR_OK == imu_update());
+    }
+
+    assert(CAR_OK == imu_get_event(&event));
+    assert(CAR_MOTION_ACCELERATING == event);
+
+    /* Holding the speed: the ring empties of the climb, then the hold. */
+    for (index = 0u; index < TEST_HOLD_TICKS; index++)
+    {
+        distance_mm += 1u;
+        assert(CAR_OK == imu_feed_odometry(distance_mm, speed, speed));
+        assert(CAR_OK == imu_update());
+    }
+
+    assert(CAR_OK == imu_get_event(&event));
+    assert(CAR_MOTION_STATIONARY == event);
+
+    return distance_mm;
 }
 
 /**

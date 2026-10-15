@@ -114,7 +114,7 @@ static void test_servo_band (void)
 
 /**
  * @brief A wall across the whole arc is valid with no clearance, so the
- *        plan is to reverse; clearance on a side makes that side the plan.
+ *        plan is to reverse. Clearance on a side makes that side the plan.
  */
 static void test_wall_and_plan (void)
 {

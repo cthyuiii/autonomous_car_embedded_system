@@ -8,10 +8,10 @@
  *
  * NOTE on the radio builds. There every line is also published on
  * COMMS_TOPIC_LOG, so a car off its USB cable can still be followed from a
- * laptop; see car_log.c. That needs the line formatted into a buffer
+ * laptop. See car_log.c. That needs the line formatted into a buffer
  * first, CAR_LOG_LINE_BYTES long, and tm_sprintf() has no length limit.
  * ponytail: the longest line today is the IMU bench's status line, 279
- * bytes with every field at its widest; a longer format overruns the
+ * bytes with every field at its widest. A longer format overruns the
  * buffer, so grow it with the format.
  *
  * Owner: the team.

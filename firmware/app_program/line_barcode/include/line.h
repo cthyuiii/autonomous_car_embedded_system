@@ -4,7 +4,7 @@
  *
  * NOTE on the sensors: three MH-Sensor-Series modules, each an IR pair with
  * an LM393 comparator and a trimpot, so the output is a digital level.
- * Left and right straddle the line and give the position; the third sits
+ * Left and right straddle the line and give the position. The third sits
  * off to the left and only reads barcodes. LINE_SENSOR_DARK_LEVEL in
  * car_config.h names the level the module outputs over the black line.
  * The analog path in earlier drafts is gone: on this port layout only one
@@ -21,7 +21,7 @@
  * NOTE on timing: the line task runs every 10 ms, far too slow for a 3 mm
  * bar at driving speed, so the barcode sensor is not read there. A timer
  * alarm interrupt samples it every BARCODE_SAMPLE_USEC and timestamps each
- * change; line_poll_barcode() only decodes what was recorded. The symbol sits
+ * change. line_poll_barcode() only decodes what was recorded. The symbol sits
  * beside the line, on the left, under the barcode sensor alone.
  *
  * Owner: Buddy 3, barcode decoding and IR line following. A changed signature
@@ -62,7 +62,7 @@ car_status_t line_init (void);
  *
  * NOTE: With digital modules the threshold lives in each module's trimpot,
  * so software cannot move it. A sensor dark throughout means the car is
- * misplaced or LINE_SENSOR_DARK_LEVEL is wrong for it; one that flickers
+ * misplaced or LINE_SENSOR_DARK_LEVEL is wrong for it. One that flickers
  * has its trimpot on the edge of the floor's reflectance, so the first
  * shadow or lighting change would flip it. Set the trimpot until the
  * module's LED is steady over floor and lights on the line.
@@ -106,7 +106,7 @@ car_status_t line_get_sensor_mask (uint8_t * p_mask);
  * LINE_SENSOR_DARK_LEVEL, so a module wired the opposite way round shows a
  * mask that never means anything, while these levels still change as the
  * sensor passes over a surface. A level that never moves at all is a
- * wiring or power fault; one that moves but the wrong way means the dark
+ * wiring or power fault. One that moves but the wrong way means the dark
  * level is set backwards.
  *
  * @param[out] p_levels Bit 0 left, bit 1 barcode, bit 2 right, as read.

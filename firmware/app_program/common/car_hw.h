@@ -19,7 +19,7 @@
  * idempotent: a block that is already running is left alone, which matters
  * because motion and scanning both use PWM and neither may reset the other.
  *
- * Target only. Host tests never compile this file; a module includes it
+ * Target only. Host tests never compile this file. A module includes it
  * inside #ifndef CAR_HOST_TEST and keeps its own fake for the host.
  *
  * Owner: the team.
@@ -76,7 +76,7 @@ void car_hw_gpio_input_pullup (uint32_t pin);
  * @brief Make a pin a digital input with the pull down on and pull up off.
  *
  * NOTE: Use this where a disconnected wire must read as 0 rather than 1.
- * A module that drives its output both ways overrides the pull; one that
+ * A module that drives its output both ways overrides the pull. One that
  * only pulls low needs car_hw_gpio_input_pullup() instead.
  *
  * @param[in] pin GPIO number.
@@ -139,7 +139,7 @@ void car_hw_gpio_rise_irq_enable (uint32_t pin);
  *
  * @param[in] pin GPIO number set up with car_hw_gpio_rise_irq_enable().
  *
- * @return true if an edge was pending; it is cleared.
+ * @return true if an edge was pending. It is cleared.
  */
 bool car_hw_gpio_rise_irq_take (uint32_t pin);
 
@@ -166,7 +166,7 @@ void car_hw_alarm_rearm (uint32_t alarm, uint32_t delay_usec);
  *
  * The slice counts the system clock divided by div_int from 0 to wrap, so
  * the output period is (wrap + 1) * div_int / CAR_HW_SYS_CLOCK_HZ. Both pins
- * of a slice share div_int and wrap; the level is set per pin.
+ * of a slice share div_int and wrap. The level is set per pin.
  *
  * @param[in] pin     GPIO number.
  * @param[in] div_int Integer clock divider, 1 to 255.

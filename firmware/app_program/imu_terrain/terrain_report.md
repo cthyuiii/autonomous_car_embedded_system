@@ -1,11 +1,10 @@
 # Terrain analysis report
 
-Owner: Buddy 4, IMU based motion and terrain monitoring. This is the
-deliverable the write-up asks for.
+Owner: Buddy 4, IMU based motion and terrain monitoring.
 
 **Status:** sections 1, 2, 3 and 6 are complete. Section 4 fills in from
 `./flash.sh imu_terrain` runs, the car's `car/terrain` messages, a
-protractor and a ruler; section 5 is written from those results.
+protractor and a ruler. Section 5 is written from those results.
 
 **Live status.** The car publishes its terrain status on `car/terrain`
 every 5 seconds: pitch, whether it is trusted, the vector length,
@@ -73,7 +72,7 @@ level reference.
 
 The height is not measured directly. Integrating vertical acceleration
 twice drifts far more than a hump is tall in the second or two it takes to
-cross one; integrating slope over distance does not.
+cross one. Integrating slope over distance does not.
 
 **Terrain roughness.** This is the vector's distance from one g, smoothed
 at 1/32 per sample (`IMU_ROUGHNESS_SHIFT` 5). On smooth ground the only force is gravity, so it sits
@@ -90,7 +89,7 @@ match wins:
 | Climbing hump | Pitch above +5° |
 | Descending hump | Pitch below −5° |
 | Turning | Turn rate above `IMU_TURN_EVENT_DPS` (30) |
-| Accelerating | Forward axis more than `IMU_ACCEL_EVENT_MILLI_G` (250) from its level value |
+| Accelerating | Forward axis more than `IMU_ACCEL_EVENT_MILLI_G` (250) from its level value, or the mean wheel speed rising by `IMU_ACCEL_EVENT_MM_PER_SEC2` (100 mm/s²) or more over `IMU_ACCEL_WINDOW_SAMPLES` (200 ms) |
 | Stationary | None of the above |
 
 A new event must outlast `IMU_EVENT_HOLD_SAMPLES` (20) samples, 200 ms,
@@ -118,15 +117,17 @@ magnets pull the heading.
 
 | Date | Seen on the car | Change |
 |---|---|---|
-| 2026-09-18 | Pitch wandered several degrees on a level car with a motor running | Pitch frozen outside the trust band; `IMU_FILTER_SHIFT` 2 → 4 |
+| 2026-09-18 | Pitch wandered several degrees on a level car with a motor running | Pitch frozen outside the trust band. `IMU_FILTER_SHIFT` 2 → 4 |
 | Before 2026-09-25 | Mast mount shakes | Trust band 150 → 300 mg |
-| 2026-09-25 | The IMU bench spun the left motor | The kernel brings I2C up on GP8/GP9, the left motor's pins; init now parks them |
-| 2026-09-25 | One g read as about 794 mg, so the car read ROUGH at rest | One g measured at calibration; roughness, trust and collision measured against it |
-| 2026-09-25 | Tilting sideways read as a climb | The module sits turned 90°; `IMU_FORWARD_AXIS` added, set to Y |
-| 2026-09-25 | Found in review: the IMU task ran every 20 ms, not 10, because a kernel delay adds a tick | Loops now woken every tick; `IMU_FILTER_SHIFT`, `IMU_ROUGHNESS_SHIFT` and `IMU_EVENT_HOLD_SAMPLES` doubled in samples so their time in ms is unchanged |
-| 2026-09-25 | Found in review: pitch frozen at the foot of a hump lost that part of the climb | Frozen stretches bridged between trusted samples; hump count and last hump kept |
+| 2026-09-25 | The IMU bench spun the left motor | The kernel brings I2C up on GP8/GP9, the left motor's pins. Init now parks them |
+| 2026-09-25 | One g read as about 794 mg, so the car read ROUGH at rest | One g measured at calibration. Roughness, trust and collision measured against it |
+| 2026-09-25 | Tilting sideways read as a climb | The module sits turned 90°. `IMU_FORWARD_AXIS` added, set to Y |
+| 2026-09-25 | Found in review: the IMU task ran every 20 ms, not 10, because a kernel delay adds a tick | Loops now woken every tick. `IMU_FILTER_SHIFT`, `IMU_ROUGHNESS_SHIFT` and `IMU_EVENT_HOLD_SAMPLES` doubled in samples so their time in ms is unchanged |
+| 2026-09-25 | Found in review: pitch frozen at the foot of a hump lost that part of the climb | Frozen stretches bridged between trusted samples. Hump count and last hump kept |
 | 2026-09-25 | Found in review: a slope that changed while pitch was frozen was still miscounted | Trust band 450 mg while a hump is open, 300 on the flat |
 | 2026-09-27 | Firm hits on the bumper sometimes did not register | Collision judged on the jolt, the vector difference from the filtered vector, instead of the vector's length over one g, which barely moves for a knock from the side. The bench column `raw` became `jolt` |
+| 2026-10-15 | ACCEL never fired. A hand push is too short for 250 mg on the filtered vector, and the car's own speed-ups are about 20 mg | Accelerating also counts from the wheels: mean speed up 100 mm/s² or more over 200 ms, which every pull-away gives |
+| 2026-10-15 | The driving bench ran at 250 mm/s, above the car's 150 and into the left encoder's noise | Bench drive speed set to `CAR_FOLLOW_SPEED_MM_PER_SEC` |
 
 ## 4. Measurements
 
@@ -140,12 +141,13 @@ it back to 0 afterwards. Reset the board before every run.
 | Boot | `mag` (the module's one g) | `ok` | `rough` | Pitch |
 |---|---|---|---|---|
 | 1 | 793 | 1 | 31 | 1 |
-| 2 | | | | |
-| 3 | | | | |
-| 4 | | | | |
+| 2 | 793 | 1 | 0 | 0 to 1 |
+| 3 | 792 | 1 | 0 | 0 to 1 |
+| 4 | 794 | 1 | 0 | 0 to 1 |
 | 5 | | | | |
 
-Pass: `ok` 1, `rough` well below 120, and pitch 0 ± 1°. Boot 1
+Pass: `ok` 1, `rough` well below 120, and pitch 0 ± 1°. Boots 2 to 4
+(2026-10-15, `imu_4a.txt`) pass on every line, `mag` 788 to 803. Boot 1
 (2026-09-26) passes: the old `raw` column, the vector's length, peaked at
 817 to 833 against 793, about 40 mg of noise at rest.
 
@@ -162,8 +164,8 @@ the angle with a protractor or phone level.
 | Sideways, left side up | 10 | | |
 | Sideways, right side up | 10 | | |
 
-Pass: within 2°. Nose up must read positive; if it reads negative, flip
-`IMU_PITCH_SIGN`. The sideways rows must read about 0; if they read the
+Pass: within 2°. Nose up must read positive. If it reads negative, flip
+`IMU_PITCH_SIGN`. The sideways rows must read about 0. If they read the
 tilt, `IMU_FORWARD_AXIS` is wrong.
 
 **c. Driving on the flat.** Run each surface for about 20 s.
@@ -206,21 +208,21 @@ Target: within 5 mm. The last column matters most.
 
 | Action | Expected event | Seen | Delay, bench lines |
 |---|---|---|---|
-| Standing still | STILL | | |
-| Pull away hard | ACCEL | | |
-| Turn on the spot | TURN | | |
-| Up the hump | CLIMB | | |
-| Down the hump | DESCEND | | |
-| Tap the bumper | IMPACT | | |
+| Standing still | STILL | STILL | |
+| Pull away hard | ACCEL | STILL from a hand push. Accelerating now also comes from the wheels, see section 3 | |
+| Turn on the spot | TURN | The bench drives straight, so turn rate stays 0 | |
+| Up the hump | CLIMB | CLIMB, tilted by hand to +15° and +32° | 0, on the first line past +5° |
+| Down the hump | DESCEND | DESCEND, tilted by hand to −21° | 0 |
+| Tap the bumper | IMPACT | IMPACT on firm knocks only, for one line | 0 |
 
 **f. Collision threshold.** Tap the bumper at a few strengths and read the
 `jolt` column, which is the peak since the last line.
 
 | Tap | `jolt` peak mg | `hit` 1? |
 |---|---|---|
-| Light touch | | |
-| Firm knock | | |
-| Push into a wall at driving speed | | |
+| Light touch, 42 taps | 101 to 532 | No, event stays STILL |
+| Firm knock, 8 knocks | 640 to 1310 | Yes, event IMPACT |
+| Push into a wall at driving speed, 250 mm/s | 738 at contact, up to 3399 while pushing | Yes. Driving free before it: 62 to 407, no hit. Pushing nosed it up to 7°, which counted 4 humps of 2 to 9 mm |
 | Driving over the hump, no contact | | |
 
 The threshold (600 mg of jolt) must sit above the hump row and below the

@@ -55,7 +55,7 @@ car_status_t motion_init (void);
  *
  * NOTE: A wheel that has never produced a single pulse has no working
  * encoder. Its speed loop reads zero and drives it hard, so the car veers,
- * but it is not reported as a fault; motion_get_state() says which
+ * but it is not reported as a fault. motion_get_state() says which
  * encoders were found. Only a wheel that pulsed and then stopped while
  * still being commanded counts as a fault.
  *
@@ -107,7 +107,7 @@ car_status_t motion_turn_right (uint16_t angle_deg);
  * @brief Drive forward continuously at the set speed with a steering bias.
  *
  * This is the line following primitive. There is no distance target, so
- * motion_is_busy() stays false; the drive continues until the next command
+ * motion_is_busy() stays false. The drive continues until the next command
  * or motion_stop(). Positive steers right by speeding the left wheel up and
  * slowing the right wheel down by the same fraction of the set speed.
  * Beyond 1000 per mille the inner wheel reverses, which pivots the car.

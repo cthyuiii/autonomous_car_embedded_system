@@ -7,7 +7,7 @@
  * types in car.h, never by one module including another.
  *
  * NOTE: One task per periodic subsystem. The four control loops run once
- * per kernel tick, 10 ms, woken by car_time_wait_tick(); a kernel delay
+ * per kernel tick, 10 ms, woken by car_time_wait_tick(). A kernel delay
  * would run them every 20 ms. Comms paces itself off the clock.
  *
  * NOTE: Every public getter below is called from a task other than the one
@@ -73,13 +73,13 @@ static bool gb_has_imu   = false;
 static bool gb_has_scan  = false;
 static bool gb_has_comms = false;
 
-/* Set by the comms task once the broker has the first telemetry; the
+/* Set by the comms task once the broker has the first telemetry. The
  * mission task holds the start until then, see ready_to_drive(). */
 static volatile bool gb_reported = false;
 
 /* Single value stores, one writer each, so no lock. line_task writes the
- * error, the sensor mask, the seen flag and the junction flag; both
- * line_task and the remote command handler write the pending command; the
+ * error, the sensor mask, the seen flag and the junction flag. Both
+ * line_task and the remote command handler write the pending command. The
  * last whole value written wins, by design. */
 static volatile int16_t           g_line_error          = 0;
 static volatile uint8_t           g_line_mask           = 0u;
@@ -110,7 +110,7 @@ static bool            gb_spin_left       = false; // Toward the second sensor
 static bool            gb_last_turn_left  = false; // For a square on arrival
 
 /* Junction handling, mission task only. The active command is the last
- * one read since the previous junction; the junction acts on it. */
+ * one read since the previous junction. The junction acts on it. */
 typedef enum
 {
     JUNCTION_WAIT = 0,      /* Stopped, waiting for a command to arrive */
@@ -210,9 +210,9 @@ static volatile car_action_t g_action        = CAR_ACTION_STARTING;
 static volatile bool      gb_stuck           = false;
 
 /* True once a detour leg has moved the car off the line. Every way out of
- * avoidance then has to go through the search, because the brief allows the
- * bypass to leave the line but requires the line to be reacquired after it.
- * Cleared on entering avoidance, so a plain reverse never sets it. */
+ * avoidance then goes through the search, because the car must find the
+ * line again after a bypass. Cleared on entering avoidance, so a plain
+ * reverse never sets it. */
 static bool               gb_off_line        = false;
 
 static void motion_task (INT stacd, void * p_exinf);
@@ -937,7 +937,7 @@ static car_nav_command_t take_command (void)
  * @brief Hold the command for the next junction and carry on following.
  *
  * NOTE: Barcodes sit anywhere along the track, so the command waits for
- * the next cross however far away it is; turning where the barcode was
+ * the next cross however far away it is. Turning where the barcode was
  * read would leave the line. A later barcode replaces an earlier one.
  */
 static void state_decode_barcode (void)
@@ -1169,10 +1169,9 @@ static bool found_branch (void)
     }
 
     /* Stop once the leading sensor has crossed the branch and gone light
-     * again, so the line sits between the two sensors and any error left
-     * reaches one from the inside, which the follower steers out. Stopping
-     * at the first touch left U-turns 8 to 12 degrees short, the line ran
-     * out past the sensor, and the car drove off it (2026-10-14). */
+     * again, so the line sits between the two sensors and the follower
+     * steers out any error left. Stopping at the first touch left U-turns
+     * 8 to 12 degrees short, and the car drove off the line. */
     return gb_branch_dark && (!b_dark);
 }
 
@@ -1448,7 +1447,7 @@ static void next_detour_leg (void)
                 g_detour_index);
         enter_state(CAR_STATE_FOLLOW_LINE);
     }
-    /* Only the driving legs can run into anything; a turn on the spot
+    /* Only the driving legs can run into anything. A turn on the spot
      * cannot, and pinging before one would just cost 60 ms. */
     else if ((CAR_AVOID_CONTINUE == action) && (path_blocked()))
     {
@@ -1477,7 +1476,7 @@ static void next_detour_leg (void)
  *        move ends.
  *
  * The sonar cannot see sideways, so every SCAN_DETOUR_STEP_MM the car turns
- * SCAN_DETOUR_LOOK_DEG toward the obstacle, looks, and turns back; the
+ * SCAN_DETOUR_LOOK_DEG toward the obstacle, looks, and turns back. The
  * sideways leg left room for the nose to swing. Once a look is clear it
  * drives SCAN_DETOUR_PAST_MM on and hands over to the next leg.
  * SCAN_DETOUR_DEPTH_MAX_MM caps the walk whatever the looks say.
@@ -1544,7 +1543,7 @@ static void state_recover_line (void)
     else if ((motion_is_busy()) && gb_line_seen)
     {
         /* The line passed under a sensor partway through a search step.
-         * Hand over now; finishing the step would sweep straight past. Not
+         * Hand over now. Finishing the step would sweep straight past. Not
          * stopped first, for the reason in watch_detour_leg(). */
         CAR_LOG(CAR_LOG_INFO, "line found mid step\n");
         enter_state(CAR_STATE_FOLLOW_LINE);
@@ -1725,12 +1724,12 @@ static bool steer_along_line (void)
  * touches the line again. The normal law finishes from there.
  *
  * NOTE on where the spin stops. With the sensors this far ahead of the
- * wheels, the space between them is only about 3 degrees of spin wide, and
+ * wheels, the space between them is only about 6 degrees of spin wide, and
  * a spin that has reached full speed coasts further than that after the
  * stop, carrying the line past both sensors. Stopping at the first touch
- * leaves the whole sensor spacing, about 10 degrees, for the coast, and
+ * leaves the whole sensor spacing, about 13 degrees, for the coast, and
  * the line ends under one sensor or the other with the car within about
- * 10 degrees of straight.
+ * 13 degrees of straight.
  *
  * The creep comes from the crossing itself. The two touches are some
  * distance apart along the path, and the wheels, CAR_SENSOR_TO_WHEEL_MM
@@ -1738,7 +1737,7 @@ static bool steer_along_line (void)
  * the second sensor touches, whatever the angle. TRACK_LINE_WIDTH_MM on
  * top puts them just past the line's centre at the angles this happens
  * at.
- * A gap of twice that or more is an angle under about 5 degrees, which the
+ * A gap of twice that or more is an angle under about 6 degrees, which the
  * normal law steers out of on its own.
  *
  * @param[in] distance Ground distance now, mm.
@@ -1953,7 +1952,7 @@ static bool obstacle_ahead (void)
          * stops the car. A side return is not in the path the way a centre
          * one is, but the fine scan that follows decides that properly and
          * answers CONTINUE when there is really nothing in the way. An
-         * unnecessary stop is the cheap error here; driving into the
+         * unnecessary stop is the cheap error here. Driving into the
          * corner of something is not. */
         b_blocked = (0u == (g_sweep_index & 1u)) ? path_blocked()
                                                  : side_blocked();

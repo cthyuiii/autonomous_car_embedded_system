@@ -9,7 +9,7 @@
  *
  * NOTE: Speed is measured from the time between encoder pulses, not from
  * pulses per tick. At 639 pulses per turn a count per 10 ms tick moves in
- * steps of 29 mm per second; a pulse interval resolves any speed the car
+ * steps of 29 mm per second. A pulse interval resolves any speed the car
  * can reach.
  *
  * Owner: Buddy 2, motion control. This file is yours.
@@ -152,7 +152,7 @@ car_status_t motion_tick (void)
 
     /* A wheel that pulsed once and then went quiet while still commanded
      * has lost its motor, its wiring or its battery: stop. A wheel that has
-     * never pulsed has no working encoder; its speed loop reads zero and
+     * never pulsed has no working encoder. Its speed loop reads zero and
      * drives it hard, and motion_get_state() reports the encoder missing.
      * The wait is long enough for the PID to push a stalled wheel to full
      * duty first, so a hump that stops the car gets climbed rather than
@@ -943,7 +943,7 @@ static void hw_set_motor (uint32_t in1_pin, uint32_t in2_pin,
  * NOTE: The RP2040 raises one interrupt for every GPIO in the bank, so
  * this reads the processor 0 status register to learn which encoder pin
  * fired and clears that bit before returning. The pulse interval is what
- * the speed measurement uses; the count is what distance uses. Phase B is
+ * the speed measurement uses. The count is what distance uses. Phase B is
  * sampled at the A edge: its level says which way the wheel turned.
  *
  * @param[in] intno Interrupt number the kernel dispatched, ENCODER_IRQ_NUM.

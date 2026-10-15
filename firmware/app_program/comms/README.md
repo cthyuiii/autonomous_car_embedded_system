@@ -6,25 +6,21 @@ Owns the MQTT session, telemetry, heartbeat and event publishing, command
 subscription and reconnection. API is `include/comms.h`. Knobs are the
 `COMMS_*` constants in `common/car_config.h`.
 
-Implemented on lwIP's own MQTT client, added to the kernel's network
-library as `lib/libnet/lwip/lwip_utk_mqtt.c` and built with the
-`WIFI_MQTT=1` profile. lwIP runs only on the radio owner task, so this
+Built on lwIP's MQTT client, added to the kernel's network library as
+`lib/libnet/lwip/lwip_utk_mqtt.c` and built with the `WIFI_MQTT=1`
+profile. lwIP runs only on the radio owner task, so this
 module never calls it: messages cross through two small ring buffers.
 Without the profile, `comms_init()` reports the radio absent and the car
 drives without telemetry. Received commands are the first letter of the
 payload, L, R, S or U in either case, so `{"cmd":"L"}` and `left` both
 turn left.
 
-Done means `test_comms.c` passes on the host, and `bench_comms` stays
-connected for ten minutes, recovers within 30 seconds after the broker is
-restarted, and echoes every command sent from a laptop MQTT client.
+Tests: `test_comms.c` on the host, `./flash.sh --wifi comms` on the car.
 
-To read them as they arrive, run `python3 firmware/dashboard.py` from the
-repository root and use the page it opens at http://127.0.0.1:8765, which
-also keeps every message by date and exports a day as CSV. In a terminal,
-`python3 firmware/watch.py` prints each message as a block with every key
-named and its unit, and marks events with `>>>`; add `| tee run.txt` to
-keep a copy.
+To watch the messages, run `python3 firmware/dashboard.py` from the
+repository root. It keeps every message by date and exports a day as CSV.
+In a terminal, `python3 firmware/watch.py` prints each message as a block
+with every key named and events marked `>>>`.
 
 Telemetry on `car/telemetry`, one JSON object every 5 s
 (`CAR_TELEMETRY_PERIOD_MSEC`):
@@ -90,8 +86,8 @@ has a `type`, and `dist`, the ground distance in mm when it was sent:
 |----------|------------------------------------|-----------------------------------|
 | hit      | a jolt over 600 mg or a stalled wheel, in any state, halted too | none |
 | obstacle | an obstacle scan finishes          | found, bearing, range, width, left, right, as `obst` above |
-| barcode  | a barcode is decoded               | code, the letter (A left, B right, C straight, D u-turn); count |
-| hump     | the car comes off a hump           | mm, this hump; peak_mm, the highest so far; count |
+| barcode  | a barcode is decoded               | code, the letter (A left, B right, C straight, D u-turn), and count |
+| hump     | the car comes off a hump           | mm for this hump, peak_mm for the highest so far, and count |
 | action   | the car starts doing something else | action, the text from the table above |
 
 Several in the same 10 ms go out in that order: what happened, then what
@@ -134,11 +130,4 @@ comms` running and `mosquitto_sub -h <broker ip> -t 'car/#' -v` open:
 2. Turn the access point or hotspot off for 30 s, then on. Heartbeats
    resume with `sessions` 3.
 
-Time both from switching back on to the first heartbeat, into the table
-below.
-
-| Measurement                    | Value | Notes                        |
-|--------------------------------|-------|------------------------------|
-| Time to first MQTT connect     |       | from power on, seconds       |
-| Reconnect time after drop      |       | pull the broker, time it     |
-| Telemetry size per message     |       | 297 bytes typical on the host, 365 at most |
+Telemetry is 297 bytes per message on a typical run, 365 at most.

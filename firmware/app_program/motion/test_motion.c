@@ -99,7 +99,7 @@ static void test_phase_b (void)
     assert(false == motion_is_busy());
 
     /* One stray phase B reading does not reverse a wheel that is plainly
-     * going forward; the right encoder produced exactly that on the car. */
+     * going forward. The right encoder produced exactly that on the car. */
     motion_host_inject_pulses(ENCODER_SLOTS_PER_REV, 0u, false, false);
     motion_host_inject_pulses(1u, 0u, true, false);
     assert(CAR_OK == motion_get_state(&state));

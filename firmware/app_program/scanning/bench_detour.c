@@ -235,10 +235,9 @@ static void wait_for_move (void)
 /**
  * @brief Keep going straight ahead for one kernel tick.
  *
- * NOTE: As a long distance move, so the straight-line correction holds the
- * heading. A steered drive with no steer holds nothing, and on 2026-10-14
- * it wandered a long way left between obstacles. The sonar stops the move
- * when something is ahead.
+ * NOTE: A long distance move, so the straight-line correction holds the
+ * heading. A steered drive with no steer wandered left. The sonar stops the
+ * move when something is ahead.
  */
 static void drive_straight (void)
 {
@@ -362,7 +361,7 @@ static void retrace (car_avoid_action_t side, uint8_t driven)
  *
  * NOTE: The ping before a driving leg is what makes this a probe rather
  * than a guess. The sonar only ever sees the mouth of a lane from the
- * start position; driving into it and looking again is the only way to
+ * start position. Driving into it and looking again is the only way to
  * find out whether it really goes anywhere.
  *
  * @param[in] side CAR_AVOID_LEFT or CAR_AVOID_RIGHT, the way round.

@@ -10,13 +10,13 @@
  * Mark a wheel, turn it exactly one revolution by hand in the direction it
  * rolls when the car drives forward, and read two things off its column:
  *
- * - the change in the count is ENCODER_SLOTS_PER_REV;
+ * - the change in the count is ENCODER_SLOTS_PER_REV.
  * - the direction must read fwd. If it reads back, flip that wheel's
  *   ENCODER_*_B_FORWARD in car_config.h.
  *
  * A count that moves while nothing turns is electrical noise on that pin.
  *
- * Owner: Buddy 2, motion control. Extend it as you need; nothing else
+ * Owner: Buddy 2, motion control. Extend it as you need. Nothing else
  * depends on it.
  */
 

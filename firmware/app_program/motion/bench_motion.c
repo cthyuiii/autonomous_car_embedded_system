@@ -19,7 +19,7 @@
  * from USB. On USB alone the rail sags as soon as a motor starts and the
  * board resets, which looks like a firmware crash.
  *
- * Owner: Buddy 2, motion control. Extend it as you need; nothing else depends
+ * Owner: Buddy 2, motion control. Extend it as you need. Nothing else depends
  * on it.
  */
 
@@ -100,7 +100,7 @@ INT usermain (void)
 /**
  * @brief Drive with a fixed steering bias for a while, then stop.
  *
- * @param[in] steer_permille Bias; 1000 stops the right wheel, -1000 the left.
+ * @param[in] steer_permille Bias. 1000 stops the right wheel, -1000 the left.
  * @param[in] msec           How long to hold it.
  * @param[in] p_what         Name for the log line.
  */
@@ -119,7 +119,7 @@ static void run_for (int16_t steer_permille, uint32_t msec,
         /* Live speeds, signed by the way each wheel really turned. Driving
          * forward, a negative wheel has its ENCODER_*_B_FORWARD backwards.
          * A reading that leaps about while the wheel sounds steady is
-         * encoder noise; a smooth swing either side of the target is the
+         * encoder noise. A smooth swing either side of the target is the
          * speed loop hunting. */
         if (0u == (elapsed % BENCH_SPEED_PRINT_MSEC))
         {

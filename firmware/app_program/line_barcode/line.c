@@ -6,7 +6,7 @@
  * and space widths seen by the barcode sensor. Every time a bar ends it
  * tries to read the last 29 elements as start, character, stop. Only a
  * correctly aligned symbol passes both asterisk checks, so no separate
- * quiet zone detection is needed; a run longer than
+ * quiet zone detection is needed. A run longer than
  * BARCODE_MAX_ELEMENT_MSEC simply empties the register. The widths come
  * from a timer interrupt that samples the barcode sensor every
  * BARCODE_SAMPLE_USEC, not from the 10 ms line task.
@@ -292,7 +292,7 @@ car_status_t line_poll_barcode (car_nav_command_t * p_command)
 
         status = CAR_ERR_NO_DATA;
 
-        /* Stop at the first symbol; later edges wait for the next poll. */
+        /* Stop at the first symbol. Later edges wait for the next poll. */
         while ((CAR_ERR_NO_DATA == status) && (next_edge(&usec, &b_dark)))
         {
             car_nav_command_t command = run_edge(usec, b_dark);
@@ -679,7 +679,7 @@ static bool is_dark (uint32_t pin);
 /**
  * @brief Sample the three digital sensors into one mask.
  *
- * @return Bit 0 left, bit 1 barcode, bit 2 right; a set bit means dark.
+ * @return Bit 0 left, bit 1 barcode, bit 2 right. A set bit means dark.
  */
 static uint8_t read_sensors (void)
 {

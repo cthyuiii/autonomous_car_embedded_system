@@ -144,7 +144,8 @@ car_status_t imu_get_accel_magnitude (uint16_t * p_milli_g);
 car_status_t imu_get_peak_jolt (uint16_t * p_milli_g);
 
 /**
- * @brief Classify the current motion from the filtered acceleration.
+ * @brief Classify the current motion from the filtered acceleration, the
+ *        pitch and the wheel speeds fed in by imu_feed_odometry().
  *
  * @param[out] p_event One of car_motion_event_t.
  *
@@ -231,7 +232,7 @@ bool imu_is_calibrated (void);
  *
  * NOTE: This is the same measurement the pitch trust gate uses, read as a
  * property of the terrain rather than of the reading. Near zero on a
- * smooth floor, because gravity is then the only force acting; every
+ * smooth floor, because gravity is then the only force acting. Every
  * bump, slip and rattle adds to it.
  *
  * @param[out] p_milli_g Filtered absolute deviation from one g.

@@ -16,10 +16,10 @@
  * Set MOTOR_MIN_DUTY to the higher of the two "stops below" duties. The
  * speed loop pushes past it to start a wheel from rest, so the floor only
  * has to stop it asking for a duty that just hums. The speed in that row
- * is the slowest the car can hold; MOTION_TURN_SPEED_MM_PER_SEC and
+ * is the slowest the car can hold. MOTION_TURN_SPEED_MM_PER_SEC and
  * CAR_BARCODE_SPEED_MM_PER_SEC can come down to just above it.
  *
- * Owner: Buddy 2, motion control. Extend it as you need; nothing else
+ * Owner: Buddy 2, motion control. Extend it as you need. Nothing else
  * depends on it.
  */
 
@@ -94,7 +94,7 @@ INT usermain (void)
         }
     }
 
-    /* Back down; the last duty each still turned at is where it stops. */
+    /* Back down. The last duty each still turned at is where it stops. */
     while (duty > 0u)
     {
         step_duty(duty, &b_left, &b_right);

@@ -7,9 +7,8 @@ DESIGN.md
 .impeccable/
 # Tribunal documents and their evidence, submitted on the portal instead
 tribunal1/
-# Raw bench captures; the figures that matter are in the reports
-imu_still.txt
-firmware/imu_drive.txt
+# Raw bench captures. The figures that matter are in the reports
+imu_*.txt
 # Dashboard run data, one file per day; export it from the page
 firmware/runs/
 

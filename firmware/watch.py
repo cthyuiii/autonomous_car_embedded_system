@@ -9,7 +9,7 @@ Events stand out with >>> so a hit, a barcode or an obstacle is easy to
 spot between the 5 s messages. Needs mosquitto_sub, from
 `brew install mosquitto`. Ctrl-C stops it.
 
-The key meanings follow comms/README.md; a key not listed here prints
+The key meanings follow comms/README.md. A key not listed here prints
 under its own name, so a new one still shows.
 """
 
@@ -144,7 +144,7 @@ def show(topic, payload):
     global gb_after_block
     now = time.strftime("%H:%M:%S")
 
-    # Log lines run together; every other message is a block with a blank
+    # Log lines run together. Every other message is a block with a blank
     # line either side.
     if topic == "car/log":
         for line in payload.splitlines():

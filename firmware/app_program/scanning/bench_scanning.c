@@ -18,7 +18,7 @@
  * horn will not move at all, which looks exactly like a dead servo.
  *
  * Owner: Buddy 5, ultrasonic scanning and obstacle profiling. Extend it as you
- * need; nothing else depends on it.
+ * need. Nothing else depends on it.
  */
 
 #include <stdint.h>

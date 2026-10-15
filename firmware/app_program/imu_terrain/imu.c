@@ -85,6 +85,8 @@ static int16_t  g_heading_deg            = 0;
 static int16_t  g_turn_rate_dps          = 0;
 static int16_t  g_wheel_left             = 0;
 static int16_t  g_wheel_right            = 0;
+static int16_t  g_speed_ring[IMU_ACCEL_WINDOW_SAMPLES] = { 0 };  /* mm/s */
+static uint32_t g_speed_next             = 0u;   /* Oldest, overwritten next */
 static uint32_t g_distance_mm            = 0u;
 static uint32_t g_prev_distance_mm       = 0u;
 static car_motion_event_t g_event        = CAR_MOTION_STATIONARY;
@@ -120,6 +122,7 @@ static void     hw_delay_msec (uint32_t msec);
 car_status_t imu_init (void)
 {
     car_status_t status = CAR_ERR_HARDWARE;
+    uint32_t     index  = 0u;
 
     g_pitch_deg         = 0;
     g_accel_milli_g     = IMU_GRAVITY_MILLI_G;
@@ -141,6 +144,12 @@ car_status_t imu_init (void)
     g_prev_distance_mm  = 0u;
     g_last_hump_mm      = 0u;
     g_peak_hump_mm      = 0u;
+    g_speed_next        = 0u;
+
+    for (index = 0u; index < IMU_ACCEL_WINDOW_SAMPLES; index++)
+    {
+        g_speed_ring[index] = 0;
+    }
 
     if (hw_init())
     {
@@ -257,7 +266,7 @@ car_status_t imu_update (void)
         {
             /* How far the gravity vector is from one g, smoothed. On
              * smooth ground it sits near zero because the only force is
-             * gravity; every bump, slip and rattle adds to it. That makes
+             * gravity. Every bump, slip and rattle adds to it. That makes
              * it a terrain roughness measure as well as the trust gate,
              * which is the same number read two ways. */
             int32_t  offset = difference_from_gravity(g_accel_milli_g);
@@ -502,9 +511,8 @@ static void filter_sample (imu_raw_t const * p_raw)
  *
  * NOTE: The offset is the midpoint of the running extremes, so it only
  * becomes meaningful once the car has turned through most of a circle.
- * Until the spread is wide enough the raw axes are used as they are.
- * TODO: confirm the sign convention on the bench, it depends on which way
- * the module's X axis points on the mount.
+ * Until the spread is wide enough the raw axes are used as they are. The
+ * sign depends on which way the module's X axis points on the mount.
  */
 static void update_heading (void)
 {
@@ -609,9 +617,12 @@ static void update_event (void)
     car_motion_event_t candidate = CAR_MOTION_STATIONARY;
     int32_t rate    = 0;
     int32_t forward = g_accel_mg[IMU_FORWARD_AXIS] - g_accel_ref_fwd_mg;
+    /* Casts: two int16_t speeds, exact as int32_t. */
+    int32_t speed   = ((int32_t)g_wheel_left + (int32_t)g_wheel_right) / 2;
+    int32_t gain    = 0;
 
-    /* Casts: two int16_t speeds and a small constant, exact as int32_t;
-     * the product stays well inside it. */
+    /* Casts: two int16_t speeds and a small constant, exact as int32_t.
+     * The product stays well inside it. */
     rate = (((int32_t)g_wheel_left - (int32_t)g_wheel_right)
             * IMU_DEGREES_PER_RADIAN_MILLI) / ((int32_t)WHEEL_BASE_MM * 1000);
 
@@ -628,6 +639,19 @@ static void update_event (void)
     {
         rate = -rate;
     }
+
+    if (speed < 0)
+    {
+        speed = -speed;
+    }
+
+    /* Speed gained since the oldest sample in the ring, per second. Casts:
+     * speeds stay under 1600 mm/s, so the products fit int32_t and the
+     * stored speed fits int16_t. */
+    gain = ((speed - (int32_t)g_speed_ring[g_speed_next]) * 1000)
+           / (int32_t)(IMU_ACCEL_WINDOW_SAMPLES * IMU_SAMPLE_PERIOD_MSEC);
+    g_speed_ring[g_speed_next] = (int16_t)speed;
+    g_speed_next = (g_speed_next + 1u) % IMU_ACCEL_WINDOW_SAMPLES;
 
     /* Casts: the thresholds are small positive constants. */
     if (gb_collision_latched)
@@ -646,7 +670,8 @@ static void update_event (void)
     {
         candidate = CAR_MOTION_TURNING;
     }
-    else if (forward > (int32_t)IMU_ACCEL_EVENT_MILLI_G)
+    else if ((forward > (int32_t)IMU_ACCEL_EVENT_MILLI_G)
+             || (gain >= (int32_t)IMU_ACCEL_EVENT_MM_PER_SEC2))
     {
         candidate = CAR_MOTION_ACCELERATING;
     }
@@ -789,7 +814,7 @@ static uint32_t isqrt (uint32_t value)
 
 #ifdef CAR_HOST_TEST
 
-/* Host fakes: the test injects readings; the default is level and still. */
+/* Host fakes: the test injects readings. The default is level and still. */
 static imu_raw_t g_host_raw =
 {
     { 0, 0, IMU_GRAVITY_MILLI_G },

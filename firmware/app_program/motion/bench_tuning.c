@@ -13,14 +13,14 @@
  *   2. Accuracy, ON the floor. BENCH_RUNS drives of BENCH_DISTANCE_MM,
  *      then BENCH_RUNS left and BENCH_RUNS right turns of BENCH_TURN_DEG.
  *      Before each, BENCH_PLACE_MSEC to measure the last one and put the
- *      car back on its start mark. Each row is what the encoders say; the
+ *      car back on its start mark. Each row is what the encoders say. The
  *      tape measure fills the last column.
  *
  * NOTE: Motion is ticked through every wait, as the car's motion task
  * does, so pulses from lifting and placing the car are taken in while it
  * stands still rather than landing in the next move's first tick.
  *
- * Owner: Buddy 2, motion control. Extend it as you need; nothing else
+ * Owner: Buddy 2, motion control. Extend it as you need. Nothing else
  * depends on it.
  */
 

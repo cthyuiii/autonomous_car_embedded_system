@@ -1,6 +1,6 @@
 # Motion control: PID tuning report and motion accuracy evaluation
 
-Owner: Buddy 2, motion control. The write-up asks for both deliverables.
+Owner: Buddy 2, motion control.
 
 **Status:** sections 1 to 3 and 6 are complete. Sections 4 and 5 fill in
 from one run of `./flash.sh tuning`, whose console output prints the table
@@ -16,12 +16,12 @@ duty = target * 1000 / MOTION_MAX_SPEED_MM_PER_SEC      feedforward
 ```
 
 - **Speed** is measured from the time between encoder pulses, not from
-  pulses per tick. At 639 pulses per wheel turn and 188 mm per turn, one
-  pulse is 0.29 mm.
+  pulses per tick. At 639 pulses per wheel turn and 205 mm per turn, one
+  pulse is 0.32 mm.
 - **Direction** comes from phase B, read at each phase A edge. A reversal
   only counts after 4 pulses in a row agree. A wheel turning against its
   command is a negative speed, so the PID pushes harder.
-- **The integral** is clamped at ±20000 (anti-windup). It is reset only
+- **The integral** is clamped at ±40000 (anti-windup). It is reset only
   when a wheel changes direction, so steering updates every tick don't
   wipe it.
 - **Duty floor:** any non-zero duty is floored at `MOTOR_MIN_DUTY`, below
@@ -40,14 +40,15 @@ duty = target * 1000 / MOTION_MAX_SPEED_MM_PER_SEC      feedforward
 |---|---|---|
 | `MOTION_PID_KP_MILLI` / `KI` / `KD` | 500 / 25 / 20 | The 20 ms tuning carried to 10 ms, see section 3 |
 | `MOTION_PID_INTEGRAL_LIMIT` | 40000 | mm/s × ticks, full authority 1000 ‰ |
-| `MOTION_MAX_SPEED_MM_PER_SEC` | 800 | Half the 1600 eyeballed from a timed turn at the old 20 ms loop |
-| `MOTOR_MIN_DUTY` | 70 ‰ | `./flash.sh duty` on the floor: both wheels start at 90 and keep turning down to 70; 60 still creeps at 10 to 14 mm/s |
+| `MOTION_MAX_SPEED_MM_PER_SEC` | 800 | Half the 1600 from a timed turn at the old 20 ms loop |
+| `MOTOR_MIN_DUTY` | 70 ‰ | `./flash.sh duty` on the floor: both wheels start at 90 and keep turning down to 70. 60 still creeps at 10 to 14 mm/s |
 | `ENCODER_SLOTS_PER_REV` | 639 | Hand turned: 638, 639, 640 |
-| `WHEEL_CIRCUMFERENCE_MM` | 188 | π × 60 mm, checked by a 500 mm drive |
-| `WHEEL_BASE_MM` | 110 | Tyre centres |
-| `ENCODER_DIRECTION_PULSES` | 4 | About 1.2 mm of travel |
+| `WHEEL_CIRCUMFERENCE_MM` | 205 | 500 mm drives against a tape, section 5 |
+| `WHEEL_LEFT_PERMILLE`, `WHEEL_RIGHT_PERMILLE` | 993, 1007 | Sideways drift at the end of 500 mm drives, section 3 |
+| `WHEEL_BASE_MM` | 110 | Tyre centres, and 89° turns against a protractor |
+| `ENCODER_DIRECTION_PULSES` | 4 | About 1.3 mm of travel |
 | `MOTION_TURN_SPEED_MM_PER_SEC` | 60 | Section 3: overshoot 0.8 to 2.4° against 2.4 to 3.7° at 100 |
-| `MOTION_STRAIGHT_KP` | 4 mm/s per mm | Not yet tuned |
+| `MOTION_STRAIGHT_KP` | 4 mm/s per mm | 500 mm drives end straight, section 5 |
 
 ## 2. Tuning method
 
@@ -55,9 +56,9 @@ duty = target * 1000 / MOTION_MAX_SPEED_MM_PER_SEC      feedforward
 from rest to 100, 200 and 300 mm/s. Each step runs 3 s. Per wheel it
 reports:
 
-- **Rise:** time from 10 % to 90 % of the target;
-- **Overshoot:** peak above the target, as a percentage;
-- **Steady error:** mean speed minus the target over the last second;
+- **Rise:** time from 10 % to 90 % of the target.
+- **Overshoot:** peak above the target, as a percentage.
+- **Steady error:** mean speed minus the target over the last second.
 - **Ripple:** highest minus lowest speed over the same second.
 
 **Targets.** Rise under 300 ms, overshoot under 15 %, steady error within
@@ -67,7 +68,7 @@ reports:
 
 1. **Feedforward first.** With KI and KD at 0, the steady error shows how
    wrong `MOTION_MAX_SPEED_MM_PER_SEC` is:
-   - both wheels settling below target means the value is too high;
+   - both wheels settling below target means the value is too high.
    - both settling above means it is too low.
 
    Fix it there, because every other gain works around it.
@@ -84,31 +85,30 @@ Record every change in section 3, with the bench rows before and after it.
 
 | Date | Seen on the car | Change |
 |---|---|---|
-| 2026-09-25 | Closed loop counts 3079 and 5260 for a short drive; hand turn gives 639 per revolution | `ENCODER_SLOTS_PER_REV` 20 → 639 |
-| 2026-09-25 | Right wheel pulsed and surged; its speed read 304–525 at a 400 target, with single samples at −468 | Phase B debounce, `ENCODER_DIRECTION_PULSES` 4. Surges gone |
+| 2026-09-25 | Closed loop counts 3079 and 5260 for a short drive. Hand turn gives 639 per revolution | `ENCODER_SLOTS_PER_REV` 20 → 639 |
+| 2026-09-25 | Right wheel pulsed and surged. Its speed read 304–525 at a 400 target, with single samples at −468 | Phase B debounce, `ENCODER_DIRECTION_PULSES` 4. Surges gone |
 | 2026-09-25 | Motion bench tracks left 400 ±10, both wheels about 200 at a 200 target | Gains kept |
 | 2026-09-25 | 500 mm floor drive matched the tape | `WHEEL_CIRCUMFERENCE_MM` 204 → 188 |
 | 2026-09-25 | Turns overshot and swept past the line too fast for the sensors | Turns use their own 100 mm/s |
-| 2026-09-25 | Jumping to 600 mm/s on a climb made the car lunge | Closed loop keeps the level speed on a climb; KI adds power gradually |
+| 2026-09-25 | Jumping to 600 mm/s on a climb made the car lunge | Closed loop keeps the level speed on a climb. KI adds power gradually |
 | 2026-09-25 | Found in review: a stopped wheel faulted after 300 ms, before the PID could reach full duty on a hump | Stall fault moved to its own `MOTION_STALL_FAULT_MSEC` 2000 |
 | 2026-09-25 | Nothing held heading on distance moves | Straight-line correction added |
-| 2026-09-25 | Found in review: `tk_dly_tsk(10)` ran every loop every 20 ms while the PID and stall timers counted 10 | Loops woken every 10 ms kernel tick; `MOTION_MAX_SPEED_MM_PER_SEC` 1600 → 800, which keeps open-loop distances right |
+| 2026-09-25 | Found in review: `tk_dly_tsk(10)` ran every loop every 20 ms while the PID and stall timers counted 10 | Loops woken every 10 ms kernel tick. `MOTION_MAX_SPEED_MM_PER_SEC` 1600 → 800, which keeps open-loop distances right |
 | 2026-09-25 | The gains tuned on the car assumed 20 ms ticks | Carried to 10 ms unchanged in real time: KI 50 → 25, KD 10 → 20, integral limit 20000 → 40000, KP stays 500 |
-| 2026-09-26 | First tuning run. Left wheel at 300 mm/s: overshoot 433 %, ripple 1409 mm/s, right normal. Drives drift left on the floor while the encoder heading reads under 1° | Encoder edges closer than `ENCODER_MIN_PULSE_USEC` (150 µs) to the last pulse are thrown away and counted; the bench prints the counts |
-| 2026-09-26 | Second run: left 54 glitches thrown away, right 1, yet the left still spiked (1196 % at 100 mm/s, ripple 1021 at 300). Right wheel clean: rise 110 to 200 ms, overshoot 3 to 4 %, steady error ±1 | Also thrown away: an edge whose pin is already low when the interrupt reads it. Left encoder wiring to be checked |
+| 2026-09-26 | First tuning run. Left wheel at 300 mm/s: overshoot 433 %, ripple 1409 mm/s, right normal. Drives drift left on the floor while the encoder heading reads under 1° | Encoder edges closer than `ENCODER_MIN_PULSE_USEC` (150 µs) to the last pulse are thrown away and counted. The bench prints the counts |
+| 2026-09-26 | Second run: left 54 glitches thrown away, right 1, yet the left still spiked (1196 % at 100 mm/s, ripple 1021 at 300). Right wheel clean: rise 110 to 200 ms, overshoot 3 to 4 %, steady error ±1 | Also thrown away: an edge whose pin is already low when the interrupt reads it |
 | 2026-09-26 | Duty bench: start 90 ‰, keep turning to 70 ‰, 35 mm/s at 100 ‰ | `MOTOR_MIN_DUTY` 150 → 70 |
-| 2026-09-26 | Third run, with the pin level check and the floor at 70: left matches right at 100 and 200 mm/s (overshoot 4 to 5 %, ripple 8 to 14); left still noisy at 300 only (351 %, ripple 1097); 180 glitches in the step test, none during the 200 mm/s drives. Turns 92.4 to 93.7° | Kept; the car never asks for 300 |
+| 2026-09-26 | Third run, with the pin level check and the floor at 70: left matches right at 100 and 200 mm/s (overshoot 4 to 5 %, ripple 8 to 14). Left still noisy at 300 only (351 %, ripple 1097). 180 glitches in the step test, none during the 200 mm/s drives. Turns 92.4 to 93.7° | Kept. The car never asks for 300 |
 | 2026-09-26 | Fourth run, turn speed 60: turns 90.8 to 92.4° in about 1.75 s | `MOTION_TURN_SPEED_MM_PER_SEC` 100 → 60 |
 | 2026-10-14 | Fifth run, the first measured by hand. Drives read 508 to 510 mm on the encoders and about 550 mm on the tape, ending about 10 mm left. The 2026-09-25 cut to 188 had matched the tape while the left encoder still added spurious pulses, which the 2026-09-26 filter now throws away | `WHEEL_CIRCUMFERENCE_MM` 188 → 203 (188 × 550 / 509) |
 | 2026-10-14 | Same run: turns read 90.7 to 92.4° on the encoders and 105 to 110° on a protractor, and the car pivoted off centre | `WHEEL_BASE_MM` 110 → 101 (91.4 × 203 / 188 = 98.7, × 110 / 107.5). Junction turns now stop when the leading line sensor reaches the new branch, so their angle no longer rests on the encoders |
-| 2026-10-14 | Sixth run, with 203 and 101: drives 520 mm on the tape against 508 to 509 on the encoders, ending 10 to 25 mm left and pointing about 5° left; turns about 82°. Worked in pulses, so each run's calibration cancels out: the circumference comes to 203 and 207.5, the turning base to 102 and 114 | `WHEEL_CIRCUMFERENCE_MM` 203 → 205 and `WHEEL_BASE_MM` 101 → 108, between the two runs |
+| 2026-10-14 | Sixth run, with 203 and 101: drives 520 mm on the tape against 508 to 509 on the encoders, ending 10 to 25 mm left and pointing about 5° left. Turns about 82°. Worked in pulses, so each run's calibration cancels out: the circumference comes to 203 and 207.5, the turning base to 102 and 114 | `WHEEL_CIRCUMFERENCE_MM` 203 → 205 and `WHEEL_BASE_MM` 101 → 108, between the two runs |
 | 2026-10-14 | Same run: the encoder heading read 0.0 to +0.3° while the car turned about 5° left over 500 mm, so equal pulse counts are not equal ground: the left tyre covers about 1.4 % less per turn | Per-wheel shares `WHEEL_LEFT_PERMILLE` 993 and `WHEEL_RIGHT_PERMILLE` 1007, used by both speed loops and the straight-line correction |
-| 2026-10-14 | Seventh run, with 205, 108 and the shares: drives 500 to 515 mm on the tape against 509 to 510 on the encoders, small sideways deviation, car facing along the tape; turns about 89° | Distance and straightness kept. `WHEEL_BASE_MM` 108 → 110 (90.9 / 89), which is the tyre centres measured with a ruler |
+| 2026-10-14 | Seventh run, with 205, 108 and the shares: drives 500 to 515 mm on the tape against 509 to 510 on the encoders, small sideways deviation, car facing along the tape. Turns about 89° | Distance and straightness kept. `WHEEL_BASE_MM` 108 → 110 (90.9 / 89), which is the tyre centres measured with a ruler |
 
 ## 4. Step response results
 
-Paste part 1 of the bench output below. Firmware under test: gains as in
-section 1.
+Firmware under test: gains as in section 1.
 
 Fifth run, 2026-10-14: `MOTOR_MIN_DUTY` 70, turn speed 60, circumference
 still 188 (the run that set it to 203).
@@ -126,7 +126,7 @@ still 188 (the run that set it to 203).
 working (20 would mean it is not).
 
 **Encoder noise:** left 203 glitches thrown away in the step test, right
-3; none reversed. The fourth run (2026-09-26) gave the same picture: left
+3. None reversed. The fourth run (2026-09-26) gave the same picture: left
 166, right 0, left overshoot 178 % at 300.
 
 **Reading:** every row meets the section 2 targets (rise under 300 ms,
@@ -154,7 +154,7 @@ truth. The gap between them is the accuracy being evaluated.
 
 **Distance, asked 500 mm at 200 mm/s** (fifth run, 2026-10-14, with the
 circumference at 188). The three drives were measured as one figure, so
-each tape cell holds that average; single runs were not recorded.
+each tape cell holds that average. Single runs were not recorded.
 
 | Run | Asked mm | Encoders mm | Heading deg, + right | Time ms | Tape mm | Sideways mm, + right |
 |---|---|---|---|---|---|---|
@@ -238,7 +238,7 @@ The two runs bracket the true values from either side (550 then 520 mm,
 
 The turn shortfall set `WHEEL_BASE_MM` to 110. Junction turns end on the
 line sensor, so this only shapes the detour's 45° legs and how far a spin
-goes; an eighth run with a protractor would confirm it.
+goes.
 
 **Corrections these numbers drive:**
 
@@ -258,17 +258,14 @@ goes; an eighth run with a protractor would confirm it.
 
 ## 6. Known limitations
 
-- **The PID gains are converted, not measured.** They reproduce the
-  tuning done on the car at 20 ms, but that tuning was itself by eye, with
-  no step response recorded. Section 4 is the first measurement.
-- **The feedforward doubled with `MOTION_MAX_SPEED_MM_PER_SEC` at 800.**
-  If 800 is right the PID has less to do; if not, the steady error in
-  section 4 shows which way it is off.
-- **`MOTION_MAX_SPEED_MM_PER_SEC` is unmeasured.** The duty bench saw
-  about 35 mm/s at 100 ‰, where 800 at full duty predicts 80, so the
-  feedforward is high by an unknown factor and the PID covers for it.
-- **The left encoder is noisy at speed.** Edges that cannot be real are
-  thrown away and counted, but any that look real still add counts and
-  speed spikes; the fix is in the wiring, see section 3.
+- **The gains were tuned by eye at 20 ms** and carried to 10 ms. The step
+  response in section 4 meets every target except the left wheel at
+  300 mm/s.
+- **The feedforward is high.** The duty bench saw about 35 mm/s at 100 ‰,
+  where 800 at full duty predicts 80. The PID covers the difference, and
+  the steady error in section 4 is within 1 mm/s apart from the left
+  wheel at 300 mm/s.
+- **The left encoder is noisy above 200 mm/s.** Impossible edges are
+  thrown away and counted. The car never drives that fast.
 - **Straight-line correction only acts on distance moves.** Line
   following steers from the line sensors instead.

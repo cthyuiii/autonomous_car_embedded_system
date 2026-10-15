@@ -9,7 +9,7 @@
  * @brief MQTT client phase for the NO_SYS lwIP owner task.
  *
  * lwIP and this client run only on the radio owner task. Application tasks
- * never call lwIP; they hand messages across two small rings guarded by the
+ * never call lwIP. They hand messages across two small rings guarded by the
  * port's spinlock, and the owner task drains them from lwip_utk_mqtt_poll().
  * Received publishes travel the other way through the second ring.
  */
@@ -77,7 +77,7 @@ void lwip_utk_mqtt_configure (lwip_utk_mqtt_config_t const * p_config);
 /**
  * @brief Queue one publish. Any task.
  *
- * Copies the payload into a ring slot; the owner task sends it on its next
+ * Copies the payload into a ring slot. The owner task sends it on its next
  * poll.
  *
  * @param[in] p_topic   Topic, NUL terminated.

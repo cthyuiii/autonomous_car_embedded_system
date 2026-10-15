@@ -8,7 +8,7 @@
  * steady walk so the barcode sensor passes over every bar. Each symbol
  * prints as `barcode A, command 1`: 1 left, 2 right, 3 straight, 4 u-turn,
  * and 0 for a letter the course does not use. Push faster than about 2 cm a
- * second; a bar or gap that lasts over BARCODE_MAX_ELEMENT_MSEC resets the
+ * second. A bar or gap that lasts over BARCODE_MAX_ELEMENT_MSEC resets the
  * decoder.
  *
  * Build and flash with `./flash.sh line_barcode`, the three IR modules
@@ -28,7 +28,7 @@
  * and a steady 1x1 is a wiring fault, not a junction.
  *
  * Owner: Buddy 3, barcode decoding and IR line following. Extend it as you
- * need; nothing else depends on it.
+ * need. Nothing else depends on it.
  */
 
 #include <stdint.h>

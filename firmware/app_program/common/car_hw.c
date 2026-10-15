@@ -57,7 +57,7 @@ void car_hw_enable_timer (void)
 
 uint32_t car_hw_usec (void)
 {
-    /* What the SDK's time_us_32() reads; its header is not warning clean
+    /* What the SDK's time_us_32() reads. Its header is not warning clean
      * under -Wextra. */
     return timer_hw->timerawl;
 }

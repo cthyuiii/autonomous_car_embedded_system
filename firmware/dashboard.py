@@ -11,7 +11,7 @@ http://127.0.0.1:8765, or the next free port when that one is taken.
 It runs mosquitto_sub on car/#, keeps every message in runs/<date>.jsonl
 beside this file, and passes them to dashboard.html as they arrive. The
 page sends L, R, S and U through mosquitto_pub, and exports any day it
-has kept as a zip of CSV files. Standard library only; nothing is fetched
+has kept as a zip of CSV files. Standard library only. Nothing is fetched
 from the internet. watch.py is the terminal fallback and can run beside it.
 """
 

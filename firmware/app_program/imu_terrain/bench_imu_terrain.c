@@ -23,7 +23,7 @@
  * prints `hump over: N mm, count C, run peak P mm`.
  *
  * Owner: Buddy 4, IMU based motion and terrain monitoring. Extend it as you
- * need; nothing else depends on it.
+ * need. Nothing else depends on it.
  */
 
 #include <stdbool.h>
@@ -49,7 +49,7 @@ static void         print_status (void);
 static void         print_hump_over (void);
 
 #define BENCH_STARTUP_MSEC 2000u
-#define BENCH_DRIVE_MM_PER_SEC 250u
+#define BENCH_DRIVE_MM_PER_SEC CAR_FOLLOW_SPEED_MM_PER_SEC
 #define BENCH_PRINT_EVERY    20u
 
 INT usermain (void)
